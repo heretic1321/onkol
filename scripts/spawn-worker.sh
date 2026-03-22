@@ -159,18 +159,23 @@ if [ -f "$CLAUDE_JSON" ]; then
   echo "$UPDATED_CLAUDE" > "$CLAUDE_JSON"
 fi
 
-# Write the initial prompt to a file (avoids quoting issues in tmux command strings)
-INITIAL_PROMPT="Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, then begin work. Follow instructions in $WORKER_DIR/CLAUDE.md."
-printf '%s' "$INITIAL_PROMPT" > "$WORKER_DIR/initial-prompt.txt"
+# Add startup instructions to the worker CLAUDE.md so it acts immediately
+cat >> "$WORKER_DIR/CLAUDE.md" << STARTEOF
+
+## On Startup
+Immediately when you start:
+1. Read $WORKER_DIR/task.md for your task
+2. Read $WORKER_DIR/context.md for context
+3. Begin work according to your intent
+4. Report progress and results using the reply tool to your Discord channel
+Do NOT wait for a message. Start working as soon as you boot.
+STARTEOF
 
 # Create a self-contained wrapper script with all paths baked in
 WRAPPER="$WORKER_DIR/start-worker.sh"
 cat > "$WRAPPER" << WRAPEOF
 #!/bin/bash
 TMUX_TARGET="${TMUX_SESSION}:${WORKER_NAME}"
-WORK_DIR="$WORK_DIR"
-MCP_CONFIG="$WORKER_DIR/.mcp.json"
-PROMPT_FILE="$WORKER_DIR/initial-prompt.txt"
 
 # Auto-accept prompts in the background
 (
@@ -178,24 +183,21 @@ PROMPT_FILE="$WORKER_DIR/initial-prompt.txt"
     sleep 2
     PANE_CONTENT=\$(tmux capture-pane -t "\$TMUX_TARGET" -p 2>/dev/null || echo "")
     if echo "\$PANE_CONTENT" | grep -q "^❯"; then
+      # Claude is ready — send the initial prompt via tmux keys
+      sleep 1
+      tmux send-keys -t "\$TMUX_TARGET" "Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, then begin work per CLAUDE.md." Enter
       break
     fi
     tmux send-keys -t "\$TMUX_TARGET" Enter 2>/dev/null || true
   done
 ) &
-ACCEPTOR_PID=\$!
 
-# Read initial prompt from file
-PROMPT=\$(cat "\$PROMPT_FILE")
-
-# Start claude
-cd "\$WORK_DIR" && claude \\
+# Start claude (no positional prompt — startup instructions are in CLAUDE.md,
+# and the auto-acceptor sends the first prompt via tmux keys once claude is ready)
+cd "$WORK_DIR" && claude \\
   --dangerously-skip-permissions \\
   --dangerously-load-development-channels server:discord-filtered \\
-  --mcp-config "\$MCP_CONFIG" \\
-  "\$PROMPT"
-
-kill \$ACCEPTOR_PID 2>/dev/null || true
+  --mcp-config "$WORKER_DIR/.mcp.json"
 WRAPEOF
 chmod +x "$WRAPPER"
 

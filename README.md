@@ -31,24 +31,24 @@ You on Discord:  "Fixed. Clock skew between auth server and app server.
 
 The intended way to use Onkol is with a **dedicated Discord server** that becomes your ops control center.
 
-I manage about 10 applications across prod and staging. I created one Discord server called "Infrastructure" and set it up exclusively for Onkol. Each VM I onboard creates its own category with an orchestrator channel. My Discord sidebar looks like this:
+I manage about 10 applications across prod and staging. I created one Discord server and set it up exclusively for Onkol. Each VM I onboard creates its own category with an orchestrator channel. My Discord sidebar looks like this:
 
 ```
-INFRASTRUCTURE (Discord server)
+MY-INFRA (Discord server)
 │
-├── LOYALTY-VOICEBOT-PROD          ← VM running in GCP asia-south1
+├── API-SERVER-PROD                ← VM running in GCP
 │   ├── #orchestrator              ← talk to this VM's brain here
 │   ├── #fix-auth-403              ← active worker (auto-created)
-│   └── #analyze-call-drops        ← active worker (auto-created)
+│   └── #analyze-error-logs        ← active worker (auto-created)
 │
-├── PAYMENT-GATEWAY-STAGING        ← VM running in AWS ap-south-1
+├── WEB-APP-STAGING                ← VM running in AWS
 │   └── #orchestrator
 │
-├── CRM-BACKEND-PROD               ← VM behind corporate VPN
+├── BACKEND-PROD                   ← VM behind corporate VPN
 │   ├── #orchestrator
 │   └── #add-export-endpoint       ← active worker
 │
-├── COLLECTION-BOT-STAGING         ← Another GCP VM
+├── DATA-PIPELINE-STAGING          ← Another GCP VM
 │   └── #orchestrator
 │
 └── ... (as many VMs as you have)
@@ -138,14 +138,14 @@ Checking dependencies...
   All dependencies found.
 
 ✔ Where should Onkol live? ~/onkol
-✔ What should this node be called? loyalty-voicebot
+✔ What should this node be called? api-server-prod
 ✔ Discord bot token: ****
 ✔ Discord server (guild) ID: 1234567890
 ✔ Your Discord user ID: 9876543210
 ✔ Registry file? Write a prompt — tell Claude what to find
-✔ Describe: Find the GCS bucket and API endpoints from .env.local
+✔ Describe: Find the API endpoints and database URLs from .env
 ✔ Service summary? Auto-discover
-✔ CLAUDE.md? Yes — This is a LiveKit voice agent for a loyalty program...
+✔ CLAUDE.md? Yes — This is a Node.js API server deployed via docker...
 ✔ Plugins? context7, superpowers, code-simplifier
 
 ✓ Bot token is valid
@@ -154,9 +154,9 @@ Checking dependencies...
 ✓ 6 scripts installed
 ✓ Plugin installed with 4 files + dependencies
 ✓ Systemd service installed and enabled
-✓ Orchestrator started in tmux session "onkol-loyalty-voicebot"
+✓ Orchestrator started in tmux session "onkol-api-server-prod"
 
-✓ Onkol node "loyalty-voicebot" is live!
+✓ Onkol node "api-server-prod" is live!
 ```
 
 Go to your Discord server. You'll see a new category with an `#orchestrator` channel. Send it a message.
@@ -196,9 +196,9 @@ From the orchestrator channel:
 
 During setup, you can describe things in plain English instead of providing config files:
 
-- **Registry**: "Find the API endpoints from .env.local and the GCS bucket from gcloud"
+- **Registry**: "Find the API endpoints from .env and the S3 bucket from AWS CLI"
 - **Services**: Auto-discovers running services, or you describe what to look for
-- **CLAUDE.md**: "This is a LiveKit voice agent, Node.js, deployed via docker..."
+- **CLAUDE.md**: "This is a Node.js API server, Express, deployed via docker..."
 
 The orchestrator executes these prompts on first boot and generates the structured files.
 
@@ -206,13 +206,13 @@ The orchestrator executes these prompts on first boot and generates the structur
 
 ```
 Your Discord Server
-├── Category: loyalty-voicebot          ← VM 1
+├── Category: api-server-prod           ← VM 1
 │   ├── #orchestrator                   ← persistent Claude Code session
 │   ├── #fix-auth-bug                   ← worker (temporary)
-│   └── #analyze-call-logs              ← worker (temporary)
-├── Category: payment-gateway           ← VM 2
+│   └── #analyze-error-logs             ← worker (temporary)
+├── Category: web-app-staging           ← VM 2
 │   └── #orchestrator
-└── Category: crm-backend               ← VM 3
+└── Category: backend-prod              ← VM 3
     └── #orchestrator
 ```
 
@@ -266,7 +266,7 @@ If setup fails midway (missing dependency, network error, wrong bot token), your
 
 ```
 ? Found a previous setup attempt (4 steps completed). What do you want to do?
-  ❯ Resume from where it left off (node: loyalty-voicebot)
+  ❯ Resume from where it left off (node: api-server-prod)
     Start fresh
 ```
 

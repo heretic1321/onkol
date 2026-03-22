@@ -51,7 +51,7 @@ jq -r '.[] | select(.status == "active") | .name' "$TRACKING" | while read -r WO
   # tmux wraps long lines, so "reply (MCP)" and "sent" are on separate lines.
   # Check for both the MCP tool call and the "sent" confirmation independently.
   HAS_REPLIED=false
-  if echo "$PANE_FULL" | grep -qE "discord-filtered - reply.*\(MCP\)" && echo "$PANE_FULL" | grep -qF "⎿  sent"; then
+  if echo "$PANE_FULL" | grep -qE "discord-filtered - reply.*\(MCP\)" && echo "$PANE_FULL" | grep -q "sent$"; then
     HAS_REPLIED=true
   fi
 

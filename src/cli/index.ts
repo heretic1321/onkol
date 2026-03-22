@@ -151,18 +151,41 @@ program
       }
     }
 
-    // Generate systemd unit
+    // Install systemd service
     const systemdUnit = generateSystemdUnit(answers.nodeName, user, dir)
     const unitPath = `/etc/systemd/system/onkol-${answers.nodeName}.service`
-    console.log(chalk.yellow(`\nSystemd service file generated. To install:`))
-    console.log(chalk.gray(`  sudo tee ${unitPath} << 'EOF'\n${systemdUnit}EOF`))
-    console.log(chalk.gray(`  sudo systemctl daemon-reload`))
-    console.log(chalk.gray(`  sudo systemctl enable onkol-${answers.nodeName}`))
+    console.log(chalk.gray('\nInstalling systemd service...'))
+    try {
+      writeFileSync(resolve(dir, `onkol-${answers.nodeName}.service`), systemdUnit)
+      execSync(`sudo cp "${resolve(dir, `onkol-${answers.nodeName}.service`)}" "${unitPath}"`, { stdio: 'pipe' })
+      execSync('sudo systemctl daemon-reload', { stdio: 'pipe' })
+      execSync(`sudo systemctl enable onkol-${answers.nodeName}`, { stdio: 'pipe' })
+      console.log(chalk.green(`✓ Systemd service installed and enabled`))
+    } catch {
+      console.log(chalk.yellow(`⚠ Could not install systemd service automatically (need sudo).`))
+      console.log(chalk.yellow(`  To install manually:`))
+      console.log(chalk.gray(`  sudo tee ${unitPath} << 'EOF'\n${systemdUnit}EOF`))
+      console.log(chalk.gray(`  sudo systemctl daemon-reload`))
+      console.log(chalk.gray(`  sudo systemctl enable onkol-${answers.nodeName}`))
+    }
 
-    // Generate crontab
+    // Install cron jobs
     const cron = generateCrontab(dir)
-    console.log(chalk.yellow(`\nCron jobs for health checks and cleanup:`))
-    console.log(chalk.gray(`  Add to crontab (crontab -e):\n${cron}`))
+    console.log(chalk.gray('Installing cron jobs...'))
+    try {
+      const existingCron = (() => { try { return execSync('crontab -l 2>/dev/null', { encoding: 'utf-8' }) } catch { return '' } })()
+      if (!existingCron.includes(resolve(dir, 'scripts/healthcheck.sh'))) {
+        const newCron = existingCron.trimEnd() + '\n' + cron
+        execSync(`echo ${JSON.stringify(newCron)} | crontab -`, { stdio: 'pipe' })
+        console.log(chalk.green(`✓ Cron jobs installed (healthcheck every 5min, archive cleanup daily)`))
+      } else {
+        console.log(chalk.gray(`  Cron jobs already installed, skipping`))
+      }
+    } catch {
+      console.log(chalk.yellow(`⚠ Could not install cron jobs automatically.`))
+      console.log(chalk.yellow(`  Add to crontab (crontab -e):`))
+      console.log(chalk.gray(`${cron}`))
+    }
 
     // Report pending setup prompts
     if (pendingPrompts.length > 0) {
@@ -172,16 +195,26 @@ program
       }
     }
 
-    // Done
-    console.log(chalk.green.bold(`\nOnkol node "${answers.nodeName}" set up at ${dir}`))
-    console.log(chalk.green(`Discord category "${answers.nodeName}" created with #orchestrator channel`))
-    if (allowedUsers.length > 0) {
-      console.log(chalk.green(`Allowed Discord users: ${allowedUsers.join(', ')}`))
-    } else {
-      console.log(chalk.yellow(`WARNING: No Discord user ID configured. Add user IDs to config.json allowedUsers array.`))
+    // Start orchestrator
+    console.log(chalk.gray('\nStarting orchestrator...'))
+    try {
+      execSync(`bash "${resolve(dir, 'scripts/start-orchestrator.sh')}"`, { stdio: 'pipe' })
+      console.log(chalk.green(`✓ Orchestrator started in tmux session "onkol-${answers.nodeName}"`))
+    } catch (err) {
+      console.log(chalk.yellow(`⚠ Could not start orchestrator automatically.`))
+      console.log(chalk.yellow(`  Start manually: ${dir}/scripts/start-orchestrator.sh`))
     }
-    console.log(chalk.gray(`\nTo start manually:`))
-    console.log(chalk.gray(`  ${dir}/scripts/start-orchestrator.sh`))
+
+    // Done
+    console.log(chalk.green.bold(`\n✓ Onkol node "${answers.nodeName}" is live!`))
+    console.log(chalk.green(`✓ Discord category "${answers.nodeName}" created with #orchestrator channel`))
+    if (allowedUsers.length > 0) {
+      console.log(chalk.green(`✓ Allowed Discord users: ${allowedUsers.join(', ')}`))
+    } else {
+      console.log(chalk.yellow(`⚠ No Discord user ID configured. Add user IDs to config.json allowedUsers array.`))
+    }
+    console.log(chalk.gray(`\n  To attach to the session: tmux attach -t onkol-${answers.nodeName}`))
+    console.log(chalk.gray(`  To check status: systemctl status onkol-${answers.nodeName}`))
   })
 
 program.parse()

@@ -65,7 +65,7 @@ program
     // Handle registry
     if (answers.registryMode === 'import' && answers.registryPath) {
       copyFileSync(answers.registryPath, resolve(dir, 'registry.json'))
-    } else {
+    } else if (answers.registryMode !== 'prompt') {
       writeFileSync(resolve(dir, 'registry.json'), '{}')
     }
 
@@ -79,7 +79,9 @@ program
     } else if (answers.serviceMode === 'import' && answers.serviceSummaryPath) {
       servicesMd = readFileSync(answers.serviceSummaryPath, 'utf-8')
     }
-    writeFileSync(resolve(dir, 'services.md'), servicesMd)
+    if (answers.serviceMode !== 'prompt') {
+      writeFileSync(resolve(dir, 'services.md'), servicesMd)
+    }
 
     // Generate CLAUDE.md
     const claudeMd = renderOrchestratorClaude({ nodeName: answers.nodeName, maxWorkers: 3 })
@@ -110,6 +112,21 @@ program
     writeFileSync(resolve(dir, 'workers/tracking.json'), '[]')
     writeFileSync(resolve(dir, 'knowledge/index.json'), '[]')
     writeFileSync(resolve(dir, 'state.md'), '')
+
+    // Handle setup prompts
+    const pendingPrompts: Array<{ target: string; prompt: string; status: string }> = []
+    if (answers.registryPrompt) {
+      pendingPrompts.push({ target: 'registry.json', prompt: answers.registryPrompt, status: 'pending' })
+    }
+    if (answers.servicesPrompt) {
+      pendingPrompts.push({ target: 'services.md', prompt: answers.servicesPrompt, status: 'pending' })
+    }
+    if (answers.claudeMdPrompt) {
+      pendingPrompts.push({ target: 'CLAUDE.md', prompt: answers.claudeMdPrompt, status: 'pending' })
+    }
+    if (pendingPrompts.length > 0) {
+      writeFileSync(resolve(dir, 'setup-prompts.json'), JSON.stringify({ pending: pendingPrompts }, null, 2))
+    }
 
     // Copy scripts (they're part of the npm package)
     const scriptsSource = resolve(__dirname, '../../scripts')
@@ -146,6 +163,14 @@ program
     const cron = generateCrontab(dir)
     console.log(chalk.yellow(`\nCron jobs for health checks and cleanup:`))
     console.log(chalk.gray(`  Add to crontab (crontab -e):\n${cron}`))
+
+    // Report pending setup prompts
+    if (pendingPrompts.length > 0) {
+      console.log(chalk.cyan('\nPending setup prompts saved. On first boot, the orchestrator will:'))
+      for (const p of pendingPrompts) {
+        console.log(chalk.cyan(`  - Generate ${p.target} from your ${p.target === 'CLAUDE.md' ? 'description' : 'prompt'}`))
+      }
+    }
 
     // Done
     console.log(chalk.green.bold(`\nOnkol node "${answers.nodeName}" set up at ${dir}`))

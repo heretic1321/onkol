@@ -52,6 +52,18 @@ Read these files to understand your current state:
 
 Then post: "{{nodeName}} is online. [N] active workers."
 
+## Setup Prompts (First Boot)
+After reading your state files, check if `setup-prompts.json` exists and has entries with status "pending".
+If so, for each pending prompt:
+1. Read the prompt
+2. Execute it — run commands, discover information, read files as needed
+3. Write the result to the target file (registry.json, services.md, or CLAUDE.md)
+4. For registry.json: output must be valid JSON with key-value pairs
+5. For services.md: output should be structured markdown documenting services
+6. For CLAUDE.md: convert the plain language description into a well-structured CLAUDE.md with sections for project overview, tech stack, key files, dos and don'ts, deploy process
+7. Mark the prompt's status as "completed" in setup-prompts.json
+8. Report what was generated in the Discord channel
+
 ## Health Checks
 Every time you receive a message, also check:
 1. Read tracking.json for active workers

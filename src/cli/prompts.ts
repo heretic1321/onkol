@@ -7,9 +7,13 @@ export interface SetupAnswers {
   guildId: string
   discordUserId: string
   registryPath: string | null
-  registryMode: 'import' | 'skip'
-  serviceMode: 'import' | 'auto' | 'skip'
+  registryMode: 'import' | 'prompt' | 'skip'
+  registryPrompt: string | null
+  serviceMode: 'import' | 'auto' | 'prompt' | 'skip'
   serviceSummaryPath: string | null
+  servicesPrompt: string | null
+  claudeMdMode: 'prompt' | 'skip'
+  claudeMdPrompt: string | null
   plugins: string[]
 }
 
@@ -48,6 +52,7 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
       message: 'Do you have a registry file for this VM? (secrets, endpoints, ports)',
       choices: [
         { name: 'Yes, import from file', value: 'import' },
+        { name: 'Write a prompt — tell Claude what to find', value: 'prompt' },
         { name: 'Skip for now', value: 'skip' },
       ],
     },
@@ -58,12 +63,19 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
       when: (a: Record<string, unknown>) => a.registryMode === 'import',
     },
     {
+      type: 'input',
+      name: 'registryPrompt',
+      message: 'Describe what Claude should find for the registry (secrets, endpoints, ports):',
+      when: (a: Record<string, unknown>) => a.registryMode === 'prompt',
+    },
+    {
       type: 'list',
       name: 'serviceMode',
       message: 'Service summary for this VM?',
       choices: [
         { name: 'Auto-discover (scan for running services)', value: 'auto' },
         { name: 'Import from file', value: 'import' },
+        { name: 'Write a prompt — tell Claude what to discover', value: 'prompt' },
         { name: 'Skip for now', value: 'skip' },
       ],
     },
@@ -72,6 +84,27 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
       name: 'serviceSummaryPath',
       message: 'Path to service summary file:',
       when: (a: Record<string, unknown>) => a.serviceMode === 'import',
+    },
+    {
+      type: 'input',
+      name: 'servicesPrompt',
+      message: 'Describe what Claude should discover about services on this VM:',
+      when: (a: Record<string, unknown>) => a.serviceMode === 'prompt',
+    },
+    {
+      type: 'list',
+      name: 'claudeMdMode',
+      message: 'Want to describe this project in plain language? Claude will convert it to a structured CLAUDE.md.',
+      choices: [
+        { name: 'Yes, write a description', value: 'prompt' },
+        { name: 'Skip (use default template)', value: 'skip' },
+      ],
+    },
+    {
+      type: 'input',
+      name: 'claudeMdPrompt',
+      message: 'Describe this project in plain language:',
+      when: (a: Record<string, unknown>) => a.claudeMdMode === 'prompt',
     },
     {
       type: 'checkbox',
@@ -89,6 +122,9 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
   return {
     ...answers,
     registryPath: answers.registryPath || null,
+    registryPrompt: answers.registryPrompt || null,
     serviceSummaryPath: answers.serviceSummaryPath || null,
+    servicesPrompt: answers.servicesPrompt || null,
+    claudeMdPrompt: answers.claudeMdPrompt || null,
   } as SetupAnswers
 }

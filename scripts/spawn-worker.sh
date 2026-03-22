@@ -159,43 +159,48 @@ if [ -f "$CLAUDE_JSON" ]; then
   echo "$UPDATED_CLAUDE" > "$CLAUDE_JSON"
 fi
 
-# Create a wrapper script that auto-accepts all interactive prompts
-# by running a background loop that sends Enter keys until claude is ready
+# Write the initial prompt to a file (avoids quoting issues in tmux command strings)
+INITIAL_PROMPT="Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, then begin work. Follow instructions in $WORKER_DIR/CLAUDE.md."
+printf '%s' "$INITIAL_PROMPT" > "$WORKER_DIR/initial-prompt.txt"
+
+# Create a self-contained wrapper script with all paths baked in
 WRAPPER="$WORKER_DIR/start-worker.sh"
-cat > "$WRAPPER" << 'WRAPEOF'
+cat > "$WRAPPER" << WRAPEOF
 #!/bin/bash
+TMUX_TARGET="${TMUX_SESSION}:${WORKER_NAME}"
+WORK_DIR="$WORK_DIR"
+MCP_CONFIG="$WORKER_DIR/.mcp.json"
+PROMPT_FILE="$WORKER_DIR/initial-prompt.txt"
+
 # Auto-accept prompts in the background
-# Sends Enter every 2 seconds for up to 20 seconds, then stops
 (
-  for i in $(seq 1 10); do
+  for i in \$(seq 1 10); do
     sleep 2
-    # Check if claude is past the prompts by looking for the "❯" prompt
-    PANE_CONTENT=$(tmux capture-pane -t "$1" -p 2>/dev/null || echo "")
-    if echo "$PANE_CONTENT" | grep -q "^❯"; then
-      # Claude is at the interactive prompt, stop sending Enter
+    PANE_CONTENT=\$(tmux capture-pane -t "\$TMUX_TARGET" -p 2>/dev/null || echo "")
+    if echo "\$PANE_CONTENT" | grep -q "^❯"; then
       break
     fi
-    tmux send-keys -t "$1" Enter 2>/dev/null || true
+    tmux send-keys -t "\$TMUX_TARGET" Enter 2>/dev/null || true
   done
 ) &
-ACCEPTOR_PID=$!
+ACCEPTOR_PID=\$!
+
+# Read initial prompt from file
+PROMPT=\$(cat "\$PROMPT_FILE")
 
 # Start claude
-cd "$2" && claude \
-  --dangerously-skip-permissions \
-  --dangerously-load-development-channels server:discord-filtered \
-  --mcp-config "$3" \
-  "$4"
+cd "\$WORK_DIR" && claude \\
+  --dangerously-skip-permissions \\
+  --dangerously-load-development-channels server:discord-filtered \\
+  --mcp-config "\$MCP_CONFIG" \\
+  "\$PROMPT"
 
-# Clean up background acceptor if still running
-kill $ACCEPTOR_PID 2>/dev/null || true
+kill \$ACCEPTOR_PID 2>/dev/null || true
 WRAPEOF
 chmod +x "$WRAPPER"
 
-# Start the worker in tmux using the wrapper
-INITIAL_PROMPT="Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, then begin work. Follow instructions in $WORKER_DIR/CLAUDE.md."
-tmux new-window -t "$TMUX_SESSION" -n "$WORKER_NAME" \
-  "bash '$WRAPPER' '${TMUX_SESSION}:${WORKER_NAME}' '$WORK_DIR' '$WORKER_DIR/.mcp.json' '$INITIAL_PROMPT'"
+# Start the worker in tmux
+tmux new-window -t "$TMUX_SESSION" -n "$WORKER_NAME" "bash '$WRAPPER'"
 
 # Update tracking.json
 if [ ! -f "$TRACKING" ]; then

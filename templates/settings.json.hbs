@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "PreCompact": [{
+      "hooks": [{
+        "type": "command",
+        "command": "echo '{\"systemMessage\": \"Before compacting: write any in-flight task state to workers/tracking.json and pending decisions to state.md\"}'"
+      }]
+    }],
+    "PostToolUse": [{
+      "matcher": "Bash",
+      "hooks": [{
+        "type": "command",
+        "command": "jq -r '.tool_input.command' >> {{bashLogPath}}"
+      }]
+    }]
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits"
+  }
+}

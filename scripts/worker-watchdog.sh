@@ -42,45 +42,57 @@ jq -r '.[] | select(.status == "active") | .name' "$TRACKING" | while read -r WO
     continue
   fi
 
-  # Capture the current pane content
+  # Capture a large chunk of pane history to check for reply tool usage
+  PANE_FULL=$(tmux capture-pane -t "$TMUX_TARGET" -p -S -100 2>/dev/null || echo "")
+  # Recent pane for state detection
   PANE=$(tmux capture-pane -t "$TMUX_TARGET" -p -S -20 2>/dev/null || echo "")
+
+  # Check if worker has already used the reply tool (MCP) — if so, skip nudging
+  HAS_REPLIED=false
+  if echo "$PANE_FULL" | grep -qE "reply.*\(MCP\).*sent|reply_with_file.*\(MCP\).*sent|discord-filtered.*reply.*sent"; then
+    HAS_REPLIED=true
+  fi
 
   # Case 2: Worker hit an error and is sitting at the prompt
   if echo "$PANE" | grep -q "^❯" && echo "$PANE" | grep -qiE "error|FATAL|panic|crashed|Traceback|ECONNREFUSED"; then
-    # Check if we already nudged recently (use a flag file)
-    NUDGE_FLAG="$WORKER_DIR/.watchdog-error-nudge"
-    if [ ! -f "$NUDGE_FLAG" ] || [ "$(find "$NUDGE_FLAG" -mmin +10 2>/dev/null)" ]; then
-      touch "$NUDGE_FLAG"
-      # Nudge the worker to report the error
-      tmux send-keys -t "$TMUX_TARGET" \
-        "You encountered an error. Use the reply tool to report this error to the user on Discord, then try to recover or ask for help." Enter
-      discord_msg "$ORCHESTRATOR_CHANNEL" \
-        "[watchdog] Worker **${WORKER}** appears to have hit an error. Nudged it to report via Discord."
+    # Only nudge if it hasn't already reported the error via reply
+    if [ "$HAS_REPLIED" = false ]; then
+      NUDGE_FLAG="$WORKER_DIR/.watchdog-error-nudge"
+      if [ ! -f "$NUDGE_FLAG" ] || [ "$(find "$NUDGE_FLAG" -mmin +10 2>/dev/null)" ]; then
+        touch "$NUDGE_FLAG"
+        tmux send-keys -t "$TMUX_TARGET" \
+          "You encountered an error. Use the reply tool to report this error to the user on Discord, then try to recover or ask for help." Enter
+        discord_msg "$ORCHESTRATOR_CHANNEL" \
+          "[watchdog] Worker **${WORKER}** appears to have hit an error. Nudged it to report via Discord."
+      fi
     fi
     continue
   fi
 
   # Case 3: Worker is idle at the prompt (finished work but may not have replied)
   if echo "$PANE" | grep -q "^❯"; then
-    # Check if the pane shows the worker completed work (wrote files, finished analysis, etc.)
+    # If worker already sent replies, it's done — no nudge needed
+    if [ "$HAS_REPLIED" = true ]; then
+      continue
+    fi
+
+    # Check if the pane shows the worker completed work
     LOOKS_DONE=false
     if echo "$PANE" | grep -qiE "Done\.|Complete|Finished|wrote.*file|created.*file|report.*saved|analysis.*complete|All.*done"; then
       LOOKS_DONE=true
     fi
 
     if [ "$LOOKS_DONE" = true ]; then
-      # Check if we already nudged for completion (use a different flag)
       NUDGE_FLAG="$WORKER_DIR/.watchdog-done-nudge"
       if [ ! -f "$NUDGE_FLAG" ] || [ "$(find "$NUDGE_FLAG" -mmin +10 2>/dev/null)" ]; then
         touch "$NUDGE_FLAG"
         tmux send-keys -t "$TMUX_TARGET" \
-          "You appear to have finished your work but may not have sent results to Discord. Use the reply tool to send a summary of what you did and your findings. Use replyWithFile for any file deliverables. The user CANNOT see your terminal output." Enter
+          "You appear to have finished your work but haven't sent results to Discord. Use the reply tool to send a summary of what you did and your findings. Use replyWithFile for any file deliverables. The user CANNOT see your terminal output." Enter
         discord_msg "$ORCHESTRATOR_CHANNEL" \
-          "[watchdog] Worker **${WORKER}** appears done but idle. Nudged it to send results via Discord."
+          "[watchdog] Worker **${WORKER}** appears done but didn't reply to Discord. Nudged it to send results."
       fi
     else
       # Worker is idle but doesn't look like it completed meaningful work
-      # Check how long it's been idle by looking at status.json
       if [ -f "$WORKER_DIR/status.json" ]; then
         LAST_UPDATE=$(jq -r '.updated // empty' "$WORKER_DIR/status.json" 2>/dev/null)
         if [ -n "$LAST_UPDATE" ]; then

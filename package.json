@@ -1,0 +1,30 @@
+{
+  "name": "onkol",
+  "version": "0.1.0",
+  "description": "Decentralized on-call agent system powered by Claude Code",
+  "type": "module",
+  "bin": {
+    "onkol": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "bun test",
+    "dev:plugin": "bun run src/plugin/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "discord.js": "^14.0.0",
+    "handlebars": "^4.7.0",
+    "inquirer": "^12.0.0",
+    "chalk": "^5.0.0",
+    "commander": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "bun-types": "^1.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

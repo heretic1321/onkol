@@ -54,7 +54,9 @@ jq -r '.[] | select(.status == "active") | .name' "$TRACKING" | while read -r WO
   fi
 
   # Case 2: Worker hit an error and is sitting at the prompt
-  if echo "$PANE" | grep -q "^❯" && echo "$PANE" | grep -qiE "error|FATAL|panic|crashed|Traceback|ECONNREFUSED"; then
+  # Only check the last 5 lines before the prompt to avoid false positives from earlier recovered errors
+  RECENT_BEFORE_PROMPT=$(echo "$PANE" | tac | sed -n '/^❯/,+5p' | tac)
+  if echo "$PANE" | grep -q "^❯" && echo "$RECENT_BEFORE_PROMPT" | grep -qiE "FATAL|panic|crashed|Traceback|ECONNREFUSED|exited with code [1-9]|Error:.*exit code"; then
     # Only nudge if it hasn't already reported the error via reply
     if [ "$HAS_REPLIED" = false ]; then
       NUDGE_FLAG="$WORKER_DIR/.watchdog-error-nudge"

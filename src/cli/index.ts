@@ -281,6 +281,7 @@ program
               DISCORD_BOT_TOKEN: answers.botToken,
               DISCORD_CHANNEL_ID: orchChannelId,
               DISCORD_ALLOWED_USERS: JSON.stringify(allowedUsers),
+              TMUX_TARGET: `onkol-${answers.nodeName}`,
             },
           },
         },

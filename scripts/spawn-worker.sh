@@ -159,19 +159,43 @@ if [ -f "$CLAUDE_JSON" ]; then
   echo "$UPDATED_CLAUDE" > "$CLAUDE_JSON"
 fi
 
-# Start Claude Code in tmux
-tmux new-window -t "$TMUX_SESSION" -n "$WORKER_NAME" \
-  "cd '$WORK_DIR' && claude \
-    --dangerously-skip-permissions \
-    --dangerously-load-development-channels server:discord-filtered \
-    --mcp-config '$WORKER_DIR/.mcp.json' \
-    'Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, then begin work. Follow instructions in $WORKER_DIR/CLAUDE.md.'"
+# Create a wrapper script that auto-accepts all interactive prompts
+# by running a background loop that sends Enter keys until claude is ready
+WRAPPER="$WORKER_DIR/start-worker.sh"
+cat > "$WRAPPER" << 'WRAPEOF'
+#!/bin/bash
+# Auto-accept prompts in the background
+# Sends Enter every 2 seconds for up to 20 seconds, then stops
+(
+  for i in $(seq 1 10); do
+    sleep 2
+    # Check if claude is past the prompts by looking for the "❯" prompt
+    PANE_CONTENT=$(tmux capture-pane -t "$1" -p 2>/dev/null || echo "")
+    if echo "$PANE_CONTENT" | grep -q "^❯"; then
+      # Claude is at the interactive prompt, stop sending Enter
+      break
+    fi
+    tmux send-keys -t "$1" Enter 2>/dev/null || true
+  done
+) &
+ACCEPTOR_PID=$!
 
-# Auto-accept interactive prompts (trust dialog + dev channels warning)
-sleep 3
-tmux send-keys -t "${TMUX_SESSION}:${WORKER_NAME}" Enter
-sleep 2
-tmux send-keys -t "${TMUX_SESSION}:${WORKER_NAME}" Enter
+# Start claude
+cd "$2" && claude \
+  --dangerously-skip-permissions \
+  --dangerously-load-development-channels server:discord-filtered \
+  --mcp-config "$3" \
+  "$4"
+
+# Clean up background acceptor if still running
+kill $ACCEPTOR_PID 2>/dev/null || true
+WRAPEOF
+chmod +x "$WRAPPER"
+
+# Start the worker in tmux using the wrapper
+INITIAL_PROMPT="Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, then begin work. Follow instructions in $WORKER_DIR/CLAUDE.md."
+tmux new-window -t "$TMUX_SESSION" -n "$WORKER_NAME" \
+  "bash '$WRAPPER' '${TMUX_SESSION}:${WORKER_NAME}' '$WORK_DIR' '$WORKER_DIR/.mcp.json' '$INITIAL_PROMPT'"
 
 # Update tracking.json
 if [ ! -f "$TRACKING" ]; then

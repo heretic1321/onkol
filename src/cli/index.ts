@@ -43,10 +43,23 @@ program
       allowedUsers.push(answers.discordUserId.trim())
     }
 
-    // Create Discord category and orchestrator channel
+    // --- CRITICAL: Create Discord category and orchestrator channel ---
     console.log(chalk.gray('Creating Discord category and channel...'))
-    const category = await createCategory(answers.botToken, answers.guildId, answers.nodeName)
-    const orchChannel = await createChannel(answers.botToken, answers.guildId, 'orchestrator', category.id)
+    let category: { id: string; name: string }
+    let orchChannel: { id: string; name: string }
+    try {
+      category = await createCategory(answers.botToken, answers.guildId, answers.nodeName)
+      orchChannel = await createChannel(answers.botToken, answers.guildId, 'orchestrator', category.id)
+    } catch (err) {
+      console.error(chalk.red(`\nFATAL: Could not create Discord category/channel.`))
+      console.error(chalk.red(`${err instanceof Error ? err.message : err}`))
+      console.error(chalk.red('\nCheck that:'))
+      console.error(chalk.red('  1. Your bot token is correct'))
+      console.error(chalk.red('  2. Your server (guild) ID is correct'))
+      console.error(chalk.red('  3. The bot has been invited to the server with "Manage Channels" permission'))
+      process.exit(1)
+    }
+    console.log(chalk.green('✓ Discord category and #orchestrator channel created'))
 
     // Write config.json
     const config = {
@@ -128,27 +141,75 @@ program
       writeFileSync(resolve(dir, 'setup-prompts.json'), JSON.stringify({ pending: pendingPrompts }, null, 2))
     }
 
-    // Copy scripts (they're part of the npm package)
+    // --- CRITICAL: Copy scripts ---
+    const requiredScripts = ['spawn-worker.sh', 'dissolve-worker.sh', 'list-workers.sh', 'check-worker.sh', 'healthcheck.sh', 'start-orchestrator.sh']
     const scriptsSource = resolve(__dirname, '../../scripts')
-    if (existsSync(scriptsSource)) {
-      for (const script of ['spawn-worker.sh', 'dissolve-worker.sh', 'list-workers.sh', 'check-worker.sh', 'healthcheck.sh', 'start-orchestrator.sh']) {
-        const src = resolve(scriptsSource, script)
-        const dst = resolve(dir, 'scripts', script)
-        if (existsSync(src)) {
-          copyFileSync(src, dst)
-          execSync(`chmod +x "${dst}"`)
-        }
+    console.log(chalk.gray('Copying scripts...'))
+    if (!existsSync(scriptsSource)) {
+      console.error(chalk.red(`\nFATAL: Scripts directory not found at ${scriptsSource}`))
+      console.error(chalk.red('The onkol package appears to be corrupted. Reinstall with: npm install -g onkol'))
+      process.exit(1)
+    }
+    for (const script of requiredScripts) {
+      const src = resolve(scriptsSource, script)
+      const dst = resolve(dir, 'scripts', script)
+      if (!existsSync(src)) {
+        console.error(chalk.red(`\nFATAL: Required script not found: ${src}`))
+        process.exit(1)
+      }
+      copyFileSync(src, dst)
+      execSync(`chmod +x "${dst}"`)
+    }
+    console.log(chalk.green(`✓ ${requiredScripts.length} scripts installed`))
+
+    // --- CRITICAL: Copy plugin source ---
+    // Look for .ts source files first (for bun), fall back to .js compiled files
+    const pluginFiles = ['index', 'mcp-server', 'discord-client', 'message-batcher']
+    const pluginSourceDir = resolve(__dirname, '../plugin')
+    const projectSrcDir = resolve(__dirname, '../../src/plugin')
+    console.log(chalk.gray('Installing discord-filtered plugin...'))
+
+    let pluginCopied = 0
+    for (const base of pluginFiles) {
+      const dst = resolve(dir, 'plugins/discord-filtered', `${base}.ts`)
+      // Try .ts from project src first, then .ts from dist, then .js from dist
+      const candidates = [
+        resolve(projectSrcDir, `${base}.ts`),
+        resolve(pluginSourceDir, `${base}.ts`),
+        resolve(pluginSourceDir, `${base}.js`),
+      ]
+      const found = candidates.find(c => existsSync(c))
+      if (found) {
+        copyFileSync(found, found.endsWith('.js') ? resolve(dir, 'plugins/discord-filtered', `${base}.js`) : dst)
+        pluginCopied++
       }
     }
+    if (pluginCopied < pluginFiles.length) {
+      console.error(chalk.red(`\nFATAL: Only ${pluginCopied}/${pluginFiles.length} plugin files found.`))
+      console.error(chalk.red(`Searched in:\n  ${projectSrcDir}\n  ${pluginSourceDir}`))
+      console.error(chalk.red('The onkol package appears to be corrupted. Reinstall with: npm install -g onkol'))
+      process.exit(1)
+    }
 
-    // Copy plugin source
-    const pluginSource = resolve(__dirname, '../plugin')
-    if (existsSync(pluginSource)) {
-      for (const file of ['index.ts', 'mcp-server.ts', 'discord-client.ts', 'message-batcher.ts']) {
-        const src = resolve(pluginSource, file)
-        const dst = resolve(dir, 'plugins/discord-filtered', file)
-        if (existsSync(src)) copyFileSync(src, dst)
-      }
+    // Create plugin package.json and install deps
+    const pluginPkgJson = {
+      name: 'discord-filtered',
+      version: '0.1.0',
+      private: true,
+      dependencies: {
+        '@modelcontextprotocol/sdk': '^1.0.0',
+        'discord.js': '^14.0.0',
+      },
+    }
+    writeFileSync(resolve(dir, 'plugins/discord-filtered/package.json'), JSON.stringify(pluginPkgJson, null, 2))
+    console.log(chalk.gray('Installing plugin dependencies (bun install)...'))
+    try {
+      execSync('bun install', { cwd: resolve(dir, 'plugins/discord-filtered'), stdio: 'pipe' })
+      console.log(chalk.green(`✓ Plugin installed with ${pluginCopied} files + dependencies`))
+    } catch {
+      console.error(chalk.red('\nFATAL: Failed to install plugin dependencies.'))
+      console.error(chalk.red('Is bun installed? Install with: curl -fsSL https://bun.sh/install | bash'))
+      process.exit(1)
     }
 
     // Install systemd service
@@ -169,22 +230,47 @@ program
       console.log(chalk.gray(`  sudo systemctl enable onkol-${answers.nodeName}`))
     }
 
-    // Install cron jobs
-    const cron = generateCrontab(dir)
-    console.log(chalk.gray('Installing cron jobs...'))
+    // Install health check timers — try cron first, then systemd user timers
+    console.log(chalk.gray('Installing health check timers...'))
+    let timersInstalled = false
+    // Try crontab
     try {
+      execSync('which crontab', { stdio: 'pipe' })
+      const cron = generateCrontab(dir)
       const existingCron = (() => { try { return execSync('crontab -l 2>/dev/null', { encoding: 'utf-8' }) } catch { return '' } })()
       if (!existingCron.includes(resolve(dir, 'scripts/healthcheck.sh'))) {
         const newCron = existingCron.trimEnd() + '\n' + cron
         execSync(`echo ${JSON.stringify(newCron)} | crontab -`, { stdio: 'pipe' })
-        console.log(chalk.green(`✓ Cron jobs installed (healthcheck every 5min, archive cleanup daily)`))
-      } else {
-        console.log(chalk.gray(`  Cron jobs already installed, skipping`))
       }
-    } catch {
-      console.log(chalk.yellow(`⚠ Could not install cron jobs automatically.`))
-      console.log(chalk.yellow(`  Add to crontab (crontab -e):`))
-      console.log(chalk.gray(`${cron}`))
+      console.log(chalk.green(`✓ Cron jobs installed (healthcheck every 5min, archive cleanup daily)`))
+      timersInstalled = true
+    } catch { /* crontab not available */ }
+    // Fallback: systemd user timers (works on Arch, Fedora, etc. without cronie)
+    if (!timersInstalled) {
+      try {
+        const installTimersScript = resolve(dir, 'scripts/install-timers.sh')
+        if (existsSync(installTimersScript)) {
+          execSync(`bash "${installTimersScript}"`, { stdio: 'pipe' })
+        } else {
+          // Create and run inline
+          const timerDir = resolve(homeDir, '.config/systemd/user')
+          mkdirSync(timerDir, { recursive: true })
+          const healthcheckPath = resolve(dir, 'scripts/healthcheck.sh')
+          writeFileSync(resolve(timerDir, 'onkol-healthcheck.service'), `[Unit]\nDescription=Onkol healthcheck\n[Service]\nType=oneshot\nExecStart=${healthcheckPath}\n`)
+          writeFileSync(resolve(timerDir, 'onkol-healthcheck.timer'), `[Unit]\nDescription=Onkol healthcheck every 5min\n[Timer]\nOnBootSec=2min\nOnUnitActiveSec=5min\n[Install]\nWantedBy=timers.target\n`)
+          writeFileSync(resolve(timerDir, 'onkol-cleanup.service'), `[Unit]\nDescription=Onkol archive cleanup\n[Service]\nType=oneshot\nExecStart=/usr/bin/find ${resolve(dir, 'workers/.archive')} -maxdepth 1 -mtime +30 -exec rm -rf {} \\;\n`)
+          writeFileSync(resolve(timerDir, 'onkol-cleanup.timer'), `[Unit]\nDescription=Onkol archive cleanup daily\n[Timer]\nOnCalendar=*-*-* 04:00:00\n[Install]\nWantedBy=timers.target\n`)
+          execSync('systemctl --user daemon-reload', { stdio: 'pipe' })
+          execSync('systemctl --user enable --now onkol-healthcheck.timer', { stdio: 'pipe' })
+          execSync('systemctl --user enable --now onkol-cleanup.timer', { stdio: 'pipe' })
+        }
+        console.log(chalk.green(`✓ Systemd user timers installed (healthcheck every 5min, cleanup daily)`))
+        timersInstalled = true
+      } catch { /* systemd timers failed too */ }
+    }
+    if (!timersInstalled) {
+      console.log(chalk.yellow(`⚠ Could not install health check timers (no crontab or systemd --user).`))
+      console.log(chalk.yellow(`  You'll need to set up periodic health checks manually.`))
     }
 
     // Report pending setup prompts

@@ -94,15 +94,42 @@ function checkDependencies(): void {
     },
   ]
 
+  const MIN_CLAUDE_VERSION = '2.1.81'
   const missing: Dep[] = []
+  const warnings: string[] = []
+
   for (const dep of deps) {
     try {
-      execSync(dep.check, { stdio: 'pipe' })
+      const output = execSync(dep.check, { stdio: 'pipe', encoding: 'utf-8' }).trim()
       console.log(chalk.green(`  ✓ ${dep.name}`))
+
+      // Check claude version meets minimum
+      if (dep.name === 'claude') {
+        const versionMatch = output.match(/(\d+\.\d+\.\d+)/)
+        if (versionMatch) {
+          const installed = versionMatch[1]
+          const [iMaj, iMin, iPatch] = installed.split('.').map(Number)
+          const [rMaj, rMin, rPatch] = MIN_CLAUDE_VERSION.split('.').map(Number)
+          const tooOld = iMaj < rMaj || (iMaj === rMaj && iMin < rMin) || (iMaj === rMaj && iMin === rMin && iPatch < rPatch)
+          if (tooOld) {
+            warnings.push(`Claude Code ${installed} is too old. Onkol requires ${MIN_CLAUDE_VERSION}+ (for --dangerously-load-development-channels).`)
+          }
+        }
+      }
     } catch {
       console.log(chalk.red(`  ✗ ${dep.name} — not found`))
       missing.push(dep)
     }
+  }
+
+  if (warnings.length > 0) {
+    console.log('')
+    for (const w of warnings) {
+      console.log(chalk.red(`  ✗ ${w}`))
+    }
+    console.log(chalk.yellow(`\n  Update Claude Code: claude update`))
+    console.log(chalk.yellow(`  Or reinstall: curl -fsSL https://claude.ai/install.sh | sh\n`))
+    process.exit(1)
   }
 
   if (missing.length > 0) {

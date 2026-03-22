@@ -6,7 +6,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 import { program } from 'commander'
 import chalk from 'chalk'
-import { mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync } from 'fs'
+import { mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, unlinkSync } from 'fs'
 import { resolve } from 'path'
 import { execSync } from 'child_process'
 import { runSetupPrompts } from './prompts.js'
@@ -43,7 +43,7 @@ function saveCheckpoint(homeDir: string, checkpoint: SetupCheckpoint): void {
 
 function clearCheckpoint(homeDir: string): void {
   const p = resolve(homeDir, '.onkol-setup-checkpoint.json')
-  if (existsSync(p)) { const { unlinkSync } = require('fs'); unlinkSync(p) }
+  if (existsSync(p)) { unlinkSync(p) }
 }
 
 function markStep(homeDir: string, checkpoint: SetupCheckpoint, step: string): void {

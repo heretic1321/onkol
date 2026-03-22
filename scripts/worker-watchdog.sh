@@ -79,12 +79,14 @@ Keys:
 - action: one of: none, nudge_reply, nudge_error, nudge_idle
 - reason: one short sentence explaining your assessment
 
-Rules:
-- working: Claude is actively executing tools, thinking, or generating output. Action: none
-- done_replied: Worker finished AND used the discord-filtered reply MCP tool (you'll see 'discord-filtered - reply (MCP)' with result 'sent'). Action: none
-- done_silent: Worker finished work (wrote files, completed analysis, etc.) but NEVER used the reply MCP tool to send results to Discord. Action: nudge_reply
-- error: Worker hit a fatal error and stopped (Traceback, FATAL, crash at the prompt). Action: nudge_error. Note: errors from EARLIER that the worker recovered from do NOT count.
-- idle: Worker is sitting at the prompt with no clear completion or error. Action: nudge_idle"
+Rules (check in this order):
+1. done_replied: If ANYWHERE in the output you see 'discord-filtered - reply (MCP)' or 'discord-filtered - reply_with_file (MCP)' followed by 'sent', the worker HAS replied. Status=done_replied, Action=none. This takes priority — even if the worker is now idle at the prompt, if it replied earlier it is done_replied NOT idle.
+2. working: Claude is actively executing tools, thinking, or generating output (not at the idle prompt). Action: none
+3. error: Worker hit a fatal error and stopped (Traceback, FATAL, crash at the prompt). Action: nudge_error. Errors from EARLIER that the worker recovered from do NOT count — only errors right before the current prompt.
+4. done_silent: Worker finished work (wrote files, completed analysis, etc.) but NEVER used the reply MCP tool anywhere in the visible output. Action: nudge_reply
+5. idle: Worker is sitting at the prompt with no clear completion, no error, and no reply tool usage. Action: nudge_idle
+
+CRITICAL: If you see ANY 'discord-filtered - reply (MCP)' with 'sent' in the output, the answer is ALWAYS done_replied with action none, regardless of current prompt state."
 
   # Use jq to build the payload — handles all JSON escaping correctly
   local payload

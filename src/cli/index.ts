@@ -1,2 +1,162 @@
 #!/usr/bin/env node
-console.log('onkol setup - not yet implemented')
+import { dirname } from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+import { program } from 'commander'
+import chalk from 'chalk'
+import { mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync } from 'fs'
+import { resolve } from 'path'
+import { execSync } from 'child_process'
+import { runSetupPrompts } from './prompts.js'
+import { createCategory, createChannel } from './discord-api.js'
+import { discoverServices, formatServicesMarkdown } from './auto-discover.js'
+import { renderOrchestratorClaude, renderSettings } from './templates.js'
+import { generateSystemdUnit, generateCrontab } from './systemd.js'
+
+program
+  .name('onkol')
+  .description('Decentralized on-call agent system')
+  .version('0.1.0')
+
+program
+  .command('setup')
+  .description('Set up an Onkol node on this VM')
+  .action(async () => {
+    console.log(chalk.bold('\nWelcome to Onkol Setup\n'))
+
+    const homeDir = process.env.HOME || '/root'
+    const answers = await runSetupPrompts(homeDir)
+    const dir = resolve(answers.installDir)
+
+    // Create directory structure
+    console.log(chalk.gray('Creating directories...'))
+    for (const sub of ['knowledge', 'workers', 'workers/.archive', 'scripts', 'plugins/discord-filtered', '.claude']) {
+      mkdirSync(resolve(dir, sub), { recursive: true })
+    }
+
+    // Build allowed users list from Discord user ID prompt
+    const user = process.env.USER || 'root'
+    const allowedUsers: string[] = []
+    if (answers.discordUserId.trim()) {
+      allowedUsers.push(answers.discordUserId.trim())
+    }
+
+    // Create Discord category and orchestrator channel
+    console.log(chalk.gray('Creating Discord category and channel...'))
+    const category = await createCategory(answers.botToken, answers.guildId, answers.nodeName)
+    const orchChannel = await createChannel(answers.botToken, answers.guildId, 'orchestrator', category.id)
+
+    // Write config.json
+    const config = {
+      nodeName: answers.nodeName,
+      botToken: answers.botToken,
+      guildId: answers.guildId,
+      categoryId: category.id,
+      orchestratorChannelId: orchChannel.id,
+      allowedUsers,
+      maxWorkers: 3,
+      installDir: dir,
+      plugins: answers.plugins,
+    }
+    writeFileSync(resolve(dir, 'config.json'), JSON.stringify(config, null, 2), { mode: 0o600 })
+
+    // Handle registry
+    if (answers.registryMode === 'import' && answers.registryPath) {
+      copyFileSync(answers.registryPath, resolve(dir, 'registry.json'))
+    } else {
+      writeFileSync(resolve(dir, 'registry.json'), '{}')
+    }
+
+    // Handle services
+    let servicesMd = '# Services\n\nNo services configured yet.\n'
+    if (answers.serviceMode === 'auto') {
+      console.log(chalk.gray('Discovering services...'))
+      const services = discoverServices()
+      servicesMd = formatServicesMarkdown(services)
+      console.log(chalk.green(`Found ${services.length} services.`))
+    } else if (answers.serviceMode === 'import' && answers.serviceSummaryPath) {
+      servicesMd = readFileSync(answers.serviceSummaryPath, 'utf-8')
+    }
+    writeFileSync(resolve(dir, 'services.md'), servicesMd)
+
+    // Generate CLAUDE.md
+    const claudeMd = renderOrchestratorClaude({ nodeName: answers.nodeName, maxWorkers: 3 })
+    writeFileSync(resolve(dir, 'CLAUDE.md'), claudeMd)
+
+    // Generate .claude/settings.json
+    const settings = renderSettings({ bashLogPath: resolve(dir, 'bash-log.txt') })
+    writeFileSync(resolve(dir, '.claude/settings.json'), settings)
+
+    // Write orchestrator .mcp.json
+    const pluginPath = resolve(dir, 'plugins/discord-filtered/index.ts')
+    const mcpJson = {
+      mcpServers: {
+        'discord-filtered': {
+          command: 'bun',
+          args: [pluginPath],
+          env: {
+            DISCORD_BOT_TOKEN: answers.botToken,
+            DISCORD_CHANNEL_ID: orchChannel.id,
+            DISCORD_ALLOWED_USERS: JSON.stringify(allowedUsers),
+          },
+        },
+      },
+    }
+    writeFileSync(resolve(dir, '.mcp.json'), JSON.stringify(mcpJson, null, 2))
+
+    // Initialize tracking and knowledge index
+    writeFileSync(resolve(dir, 'workers/tracking.json'), '[]')
+    writeFileSync(resolve(dir, 'knowledge/index.json'), '[]')
+    writeFileSync(resolve(dir, 'state.md'), '')
+
+    // Copy scripts (they're part of the npm package)
+    const scriptsSource = resolve(__dirname, '../../scripts')
+    if (existsSync(scriptsSource)) {
+      for (const script of ['spawn-worker.sh', 'dissolve-worker.sh', 'list-workers.sh', 'check-worker.sh', 'healthcheck.sh', 'start-orchestrator.sh']) {
+        const src = resolve(scriptsSource, script)
+        const dst = resolve(dir, 'scripts', script)
+        if (existsSync(src)) {
+          copyFileSync(src, dst)
+          execSync(`chmod +x "${dst}"`)
+        }
+      }
+    }
+
+    // Copy plugin source
+    const pluginSource = resolve(__dirname, '../plugin')
+    if (existsSync(pluginSource)) {
+      for (const file of ['index.ts', 'mcp-server.ts', 'discord-client.ts', 'message-batcher.ts']) {
+        const src = resolve(pluginSource, file)
+        const dst = resolve(dir, 'plugins/discord-filtered', file)
+        if (existsSync(src)) copyFileSync(src, dst)
+      }
+    }
+
+    // Generate systemd unit
+    const systemdUnit = generateSystemdUnit(answers.nodeName, user, dir)
+    const unitPath = `/etc/systemd/system/onkol-${answers.nodeName}.service`
+    console.log(chalk.yellow(`\nSystemd service file generated. To install:`))
+    console.log(chalk.gray(`  sudo tee ${unitPath} << 'EOF'\n${systemdUnit}EOF`))
+    console.log(chalk.gray(`  sudo systemctl daemon-reload`))
+    console.log(chalk.gray(`  sudo systemctl enable onkol-${answers.nodeName}`))
+
+    // Generate crontab
+    const cron = generateCrontab(dir)
+    console.log(chalk.yellow(`\nCron jobs for health checks and cleanup:`))
+    console.log(chalk.gray(`  Add to crontab (crontab -e):\n${cron}`))
+
+    // Done
+    console.log(chalk.green.bold(`\nOnkol node "${answers.nodeName}" set up at ${dir}`))
+    console.log(chalk.green(`Discord category "${answers.nodeName}" created with #orchestrator channel`))
+    if (allowedUsers.length > 0) {
+      console.log(chalk.green(`Allowed Discord users: ${allowedUsers.join(', ')}`))
+    } else {
+      console.log(chalk.yellow(`WARNING: No Discord user ID configured. Add user IDs to config.json allowedUsers array.`))
+    }
+    console.log(chalk.gray(`\nTo start manually:`))
+    console.log(chalk.gray(`  ${dir}/scripts/start-orchestrator.sh`))
+  })
+
+program.parse()

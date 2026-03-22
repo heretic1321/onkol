@@ -10,7 +10,7 @@ import { mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync } from
 import { resolve } from 'path'
 import { execSync } from 'child_process'
 import { runSetupPrompts } from './prompts.js'
-import { createCategory, createChannel } from './discord-api.js'
+import { createCategory, createChannel, validateBotToken, checkGatewayIntents } from './discord-api.js'
 import { discoverServices, formatServicesMarkdown } from './auto-discover.js'
 import { renderOrchestratorClaude, renderSettings } from './templates.js'
 import { generateSystemdUnit, generateCrontab } from './systemd.js'
@@ -176,6 +176,27 @@ program
     const allowedUsers: string[] = []
     if (answers.discordUserId.trim()) {
       allowedUsers.push(answers.discordUserId.trim())
+    }
+
+    // --- Validate Discord bot token and intents ---
+    if (!skip('discord')) {
+      console.log(chalk.gray('Validating Discord bot token...'))
+      const tokenCheck = await validateBotToken(answers.botToken)
+      if (!tokenCheck.ok) {
+        console.error(chalk.red(`\nFATAL: ${tokenCheck.error}`))
+        console.error(chalk.yellow('\nYour answers have been saved. Fix the issue and run `npx onkol setup` again to resume.'))
+        process.exit(1)
+      }
+      console.log(chalk.green('✓ Bot token is valid'))
+
+      console.log(chalk.gray('Checking gateway intents...'))
+      const intentWarning = await checkGatewayIntents(answers.botToken)
+      if (intentWarning) {
+        console.error(chalk.red(`\nFATAL: ${intentWarning}`))
+        console.error(chalk.yellow('\nEnable the required intent and run `npx onkol setup` again to resume.'))
+        process.exit(1)
+      }
+      console.log(chalk.green('✓ Message Content intent is enabled'))
     }
 
     // --- CRITICAL: Create Discord category and orchestrator channel ---

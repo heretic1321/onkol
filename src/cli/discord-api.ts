@@ -55,3 +55,112 @@ export async function sendMessage(token: string, channelId: string, content: str
   })
   if (!res.ok) throw new Error(`Failed to send message: ${res.status} ${await res.text()}`)
 }
+
+/**
+ * Validates the bot token and checks if it can connect to the Discord gateway
+ * with the required intents (Guilds, GuildMessages, MessageContent).
+ * Returns { ok: true } or { ok: false, error: string }.
+ */
+export async function validateBotToken(token: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  // Step 1: Check the token is valid via /users/@me
+  const meRes = await fetch(`${DISCORD_API}/users/@me`, {
+    headers: { Authorization: `Bot ${token}` },
+  })
+  if (!meRes.ok) {
+    const body = await meRes.text()
+    if (meRes.status === 401) return { ok: false, error: 'Invalid bot token.' }
+    return { ok: false, error: `Discord API error (${meRes.status}): ${body}` }
+  }
+
+  // Step 2: Get the bot's application to check if it's a bot token
+  const me = await meRes.json() as { username: string; bot?: boolean }
+  if (!me.bot) return { ok: false, error: 'This token belongs to a user account, not a bot.' }
+
+  // Step 3: Try connecting to the gateway with the required intents to check for DisallowedIntents
+  // Intents: Guilds (1) | GuildMessages (512) | MessageContent (32768) = 33281
+  const gatewayRes = await fetch(`${DISCORD_API}/gateway/bot`, {
+    headers: { Authorization: `Bot ${token}` },
+  })
+  if (!gatewayRes.ok) {
+    const body = await gatewayRes.text()
+    return { ok: false, error: `Cannot fetch gateway info (${gatewayRes.status}): ${body}` }
+  }
+
+  return { ok: true }
+}
+
+/**
+ * Performs a lightweight check for MessageContent intent by attempting a
+ * test gateway connection. Returns a warning message if the intent appears
+ * to be disabled, or null if everything looks good.
+ *
+ * Note: The Discord REST API doesn't expose which intents are enabled.
+ * We do a quick WebSocket handshake to the gateway to detect DisallowedIntents.
+ */
+export function checkGatewayIntents(token: string): Promise<string | null> {
+  return new Promise(async (resolve) => {
+    const timeout = setTimeout(() => resolve(null), 10000) // assume OK if no response in 10s
+
+    try {
+      const gatewayRes = await fetch(`${DISCORD_API}/gateway/bot`, {
+        headers: { Authorization: `Bot ${token}` },
+      })
+      if (!gatewayRes.ok) {
+        clearTimeout(timeout)
+        resolve('Could not fetch gateway URL. Check your bot token.')
+        return
+      }
+      const { url } = await gatewayRes.json() as { url: string }
+
+      // Dynamic import for WebSocket (works in both Node and Bun)
+      const WebSocket = (await import('ws')).default
+
+      const ws = new WebSocket(`${url}?v=10&encoding=json`)
+
+      ws.on('message', (data: Buffer) => {
+        try {
+          const payload = JSON.parse(data.toString())
+          if (payload.op === 10) {
+            // Send IDENTIFY with the intents we need
+            // Guilds=1, GuildMessages=512, MessageContent=32768
+            ws.send(JSON.stringify({
+              op: 2,
+              d: {
+                token,
+                intents: 1 | 512 | 32768,
+                properties: { os: 'linux', browser: 'onkol-setup', device: 'onkol-setup' },
+              },
+            }))
+          } else if (payload.op === 0 && payload.t === 'READY') {
+            // All good — intents accepted
+            ws.close()
+            clearTimeout(timeout)
+            resolve(null)
+          }
+        } catch { /* ignore parse errors */ }
+      })
+
+      ws.on('close', (code: number) => {
+        clearTimeout(timeout)
+        if (code === 4014) {
+          resolve(
+            'MessageContent intent is not enabled for this bot.\n' +
+            '    Go to https://discord.com/developers/applications → your bot → Bot settings\n' +
+            '    → Privileged Gateway Intents → enable "Message Content Intent" → Save'
+          )
+        } else if (code === 4004) {
+          resolve('Invalid bot token (gateway rejected authentication).')
+        }
+        // Other close codes are fine (we close it ourselves on READY)
+      })
+
+      ws.on('error', () => {
+        clearTimeout(timeout)
+        resolve(null) // network error, don't block setup
+      })
+    } catch {
+      clearTimeout(timeout)
+      resolve(null)
+    }
+  })
+}

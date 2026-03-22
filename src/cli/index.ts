@@ -542,4 +542,169 @@ program
     console.log(chalk.gray(`  To check status: systemctl status onkol-${answers.nodeName}`))
   })
 
+program
+  .command('update')
+  .description('Update plugin + scripts and restart workers with conversation history preserved')
+  .option('--skip-update', 'Skip pulling latest npm package, just restart workers')
+  .option('--dir <path>', 'Onkol install directory', '')
+  .action(async (opts) => {
+    // Find install directory
+    let dir = opts.dir
+    if (!dir) {
+      // Try common locations
+      const homeDir = process.env.HOME || ''
+      const candidates = [
+        resolve(homeDir, 'onkol'),
+        resolve(homeDir, '.onkol'),
+        '/opt/onkol',
+      ]
+      for (const c of candidates) {
+        if (existsSync(resolve(c, 'config.json'))) { dir = c; break }
+      }
+    }
+    if (!dir || !existsSync(resolve(dir, 'config.json'))) {
+      console.log(chalk.red('Could not find Onkol install. Use --dir <path> to specify.'))
+      process.exit(1)
+    }
+
+    const config = JSON.parse(readFileSync(resolve(dir, 'config.json'), 'utf-8'))
+    const nodeName = config.nodeName
+    console.log(chalk.bold('=== Onkol Update & Restart ==='))
+    console.log(chalk.gray(`Node: ${nodeName}`))
+    console.log(chalk.gray(`Install dir: ${dir}`))
+    console.log('')
+
+    // Step 1: Update files
+    if (!opts.skipUpdate) {
+      console.log(chalk.cyan('[1/3] Updating files from npm package...'))
+      try {
+        // Find where this CLI is running from — that's the latest package
+        // __dirname is dist/cli/, so pkgRoot is two levels up (dist/cli -> dist -> package root)
+        const pkgRoot = resolve(__dirname, '../..')
+        const { readdirSync, chmodSync } = await import('fs')
+
+        // Try src/plugin first (has .ts files), then dist/plugin (.js files)
+        let pluginUpdated = false
+        for (const candidate of ['src/plugin', 'dist/plugin']) {
+          const pluginSrc = resolve(pkgRoot, candidate)
+          if (existsSync(pluginSrc)) {
+            const pluginDest = resolve(dir, 'plugins/discord-filtered')
+            mkdirSync(pluginDest, { recursive: true })
+            for (const f of readdirSync(pluginSrc)) {
+              if (f.endsWith('.ts') || f.endsWith('.js')) {
+                copyFileSync(resolve(pluginSrc, f), resolve(pluginDest, f))
+              }
+            }
+            console.log(chalk.green(`  ✓ Plugin files updated (from ${candidate})`))
+            pluginUpdated = true
+            break
+          }
+        }
+        if (!pluginUpdated) {
+          console.log(chalk.yellow(`  ⚠ No plugin source found in package (looked in ${pkgRoot})`))
+        }
+
+        // Copy scripts
+        const scriptsSrc = resolve(pkgRoot, 'scripts')
+        if (existsSync(scriptsSrc)) {
+          mkdirSync(resolve(dir, 'scripts'), { recursive: true })
+          let count = 0
+          for (const f of readdirSync(scriptsSrc)) {
+            if (f.endsWith('.sh')) {
+              copyFileSync(resolve(scriptsSrc, f), resolve(dir, 'scripts', f))
+              chmodSync(resolve(dir, 'scripts', f), 0o755)
+              count++
+            }
+          }
+          console.log(chalk.green(`  ✓ ${count} scripts updated`))
+        } else {
+          console.log(chalk.yellow(`  ⚠ No scripts dir found at ${scriptsSrc}`))
+        }
+      } catch (err) {
+        console.log(chalk.yellow(`  ⚠ Update failed: ${err instanceof Error ? err.message : err}`))
+        console.log(chalk.yellow('  Continuing with restart...'))
+      }
+    } else {
+      console.log(chalk.gray('[1/3] Skipping update (--skip-update)'))
+    }
+    console.log('')
+
+    // Step 2: Find active workers and their session IDs
+    console.log(chalk.cyan('[2/3] Dissolving active workers...'))
+    const trackingPath = resolve(dir, 'workers/tracking.json')
+    if (!existsSync(trackingPath)) {
+      console.log(chalk.gray('  No active workers.'))
+      console.log(chalk.green.bold('\n✓ Update complete. No workers to restart.'))
+      return
+    }
+
+    const tracking = JSON.parse(readFileSync(trackingPath, 'utf-8'))
+    const active = tracking.filter((w: any) => w.status === 'active')
+    if (active.length === 0) {
+      console.log(chalk.gray('  No active workers.'))
+      console.log(chalk.green.bold('\n✓ Update complete. No workers to restart.'))
+      return
+    }
+
+    interface WorkerInfo { name: string; workDir: string; intent: string; sessionId: string }
+    const workers: WorkerInfo[] = []
+
+    for (const w of active) {
+      // Find session ID: look in ~/.claude/projects/<encoded-path>/
+      const encoded = '-' + w.workDir.replace(/^\//,'').replace(/\//g, '-')
+      const sessionDir = resolve(process.env.HOME || '', '.claude/projects', encoded)
+      let sessionId = ''
+      try {
+        const { readdirSync, statSync } = await import('fs')
+        const jsonls = readdirSync(sessionDir)
+          .filter((f: string) => f.endsWith('.jsonl'))
+          .map((f: string) => ({ name: f, mtime: statSync(resolve(sessionDir, f)).mtimeMs }))
+          .sort((a: any, b: any) => a.mtime - b.mtime)
+        if (jsonls.length > 0) {
+          sessionId = jsonls[jsonls.length - 1].name.replace('.jsonl', '')
+        }
+      } catch { /* session dir may not exist */ }
+
+      workers.push({ name: w.name, workDir: w.workDir, intent: w.intent, sessionId })
+      console.log(chalk.gray(`  ${w.name} → session: ${sessionId || 'none'}`))
+    }
+    console.log('')
+
+    // Dissolve
+    for (const w of workers) {
+      try {
+        execSync(`bash "${resolve(dir, 'scripts/dissolve-worker.sh')}" --name "${w.name}"`, { stdio: 'pipe' })
+        console.log(chalk.gray(`  ✓ ${w.name} dissolved`))
+      } catch (err) {
+        console.log(chalk.yellow(`  ⚠ Failed to dissolve ${w.name}: ${err instanceof Error ? err.message : err}`))
+      }
+    }
+    console.log('')
+
+    // Step 3: Respawn with --resume
+    console.log(chalk.cyan('[3/3] Respawning workers with --resume...'))
+    for (const w of workers) {
+      const resumeArg = w.sessionId ? `--resume ${w.sessionId}` : ''
+      const cmd = `bash "${resolve(dir, 'scripts/spawn-worker.sh')}" \
+        --name "${w.name}" \
+        --dir "${w.workDir}" \
+        --task "Continue the previous work. Check your conversation history for context." \
+        --intent "${w.intent}" \
+        ${resumeArg}`
+      try {
+        const output = execSync(cmd, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
+        console.log(chalk.green(`  ✓ ${w.name} respawned${w.sessionId ? ' (resumed)' : ''}`))
+        if (output.trim()) console.log(chalk.gray(`    ${output.trim()}`))
+      } catch (err: any) {
+        console.log(chalk.red(`  ✗ Failed to spawn ${w.name}`))
+        if (err.stderr) console.log(chalk.red(`    stderr: ${err.stderr.toString().trim()}`))
+        if (err.stdout) console.log(chalk.gray(`    stdout: ${err.stdout.toString().trim()}`))
+      }
+      // Small delay to avoid Discord rate limits
+      await new Promise(r => setTimeout(r, 2000))
+    }
+
+    console.log(chalk.green.bold(`\n✓ Update complete. ${workers.length} worker(s) restarted.`))
+  })
+
 program.parse()

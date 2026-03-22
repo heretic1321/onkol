@@ -37,8 +37,10 @@ function sendInterrupt(): boolean {
 
 const discord = createDiscordClient(
   { botToken: BOT_TOKEN, channelId: CHANNEL_ID, allowedUsers: ALLOWED_USERS },
-  async (message) => {
-    const content = message.content
+  async (content, message) => {
+    // Instant acknowledgment — user knows the message reached the session
+    try { await message.react('👀') } catch { /* ignore */ }
+
     const isInterrupt = /^!stop\b/i.test(content)
 
     if (isInterrupt) {

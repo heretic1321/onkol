@@ -9,6 +9,7 @@ while [[ $# -gt 0 ]]; do
     --task) TASK_DESC="$2"; shift 2 ;;
     --intent) INTENT="$2"; shift 2 ;;
     --context) CONTEXT="$2"; shift 2 ;;
+    --resume) RESUME_SESSION="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -19,6 +20,7 @@ done
 : "${TASK_DESC:?--task is required}"
 : "${INTENT:=fix}"
 : "${CONTEXT:=No additional context.}"
+: "${RESUME_SESSION:=}"
 
 # Load config
 ONKOL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -82,8 +84,7 @@ cat > "$WORKER_DIR/.mcp.json" << MCPEOF
       "env": {
         "DISCORD_BOT_TOKEN": "$BOT_TOKEN",
         "DISCORD_CHANNEL_ID": "$CHANNEL_ID",
-        "DISCORD_ALLOWED_USERS": "$ALLOWED_USERS_ESCAPED",
-        "TMUX_TARGET": "${TMUX_SESSION}:${WORKER_NAME}"
+        "DISCORD_ALLOWED_USERS": "$ALLOWED_USERS_ESCAPED"
       }
     }
   }
@@ -178,21 +179,23 @@ cat >> "$WORKER_DIR/CLAUDE.md" << STARTEOF
 Immediately when you start:
 1. Read $WORKER_DIR/task.md for your task
 2. Read $WORKER_DIR/context.md for context
-3. Use the \`reply\` tool to send "Starting work on: <brief task summary>" to Discord
-4. Begin work — send progress updates via \`reply\` every few steps
-5. When done, send your full results/summary via \`reply\` (split into <2000 char messages)
-6. For file deliverables, use \`replyWithFile\` to attach them
-
-IMPORTANT: The user CANNOT see your terminal. The ONLY way to communicate is the reply tool.
-If you complete work without sending results via reply, the user will never see your output.
+3. Begin work according to your intent
+4. Report progress and results using the reply tool to your Discord channel
 Do NOT wait for a message. Start working as soon as you boot.
 STARTEOF
+
+# Build the resume flags and initial prompt
+RESUME_FLAGS=""
+if [ -n "$RESUME_SESSION" ]; then
+  RESUME_FLAGS="--resume $RESUME_SESSION --fork-session"
+fi
 
 # Create a self-contained wrapper script with all paths baked in
 WRAPPER="$WORKER_DIR/start-worker.sh"
 cat > "$WRAPPER" << WRAPEOF
 #!/bin/bash
 TMUX_TARGET="${TMUX_SESSION}:${WORKER_NAME}"
+RESUMING="$RESUME_SESSION"
 
 # Auto-accept prompts in the background
 (
@@ -200,9 +203,14 @@ TMUX_TARGET="${TMUX_SESSION}:${WORKER_NAME}"
     sleep 2
     PANE_CONTENT=\$(tmux capture-pane -t "\$TMUX_TARGET" -p 2>/dev/null || echo "")
     if echo "\$PANE_CONTENT" | grep -q "^❯"; then
-      # Claude is ready — send the initial prompt via tmux keys
       sleep 1
-      tmux send-keys -t "\$TMUX_TARGET" "Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, then begin work. IMPORTANT: You MUST use the reply tool from the discord-filtered MCP server for ALL communication — send a starting message now, progress updates as you work, and final results when done. The user cannot see your terminal." Enter
+      if [ -n "\$RESUMING" ]; then
+        # Resuming a previous session — tell it to continue and use the new Discord channel
+        tmux send-keys -t "\$TMUX_TARGET" "You have been resumed in a new session. Your Discord channel has changed — use the reply tool to communicate. Check $WORKER_DIR/task.md for your task. Continue where you left off and report progress via Discord." Enter
+      else
+        # Fresh session — send the initial task prompt
+        tmux send-keys -t "\$TMUX_TARGET" "Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, then begin work per CLAUDE.md." Enter
+      fi
       break
     fi
     tmux send-keys -t "\$TMUX_TARGET" Enter 2>/dev/null || true
@@ -234,7 +242,8 @@ trap cleanup EXIT
 # and the auto-acceptor sends the first prompt via tmux keys once claude is ready)
 cd "$WORK_DIR" && claude \\
   --dangerously-skip-permissions \\
-  --dangerously-load-development-channels server:discord-filtered
+  --dangerously-load-development-channels server:discord-filtered \\
+  $RESUME_FLAGS
 WRAPEOF
 chmod +x "$WRAPPER"
 

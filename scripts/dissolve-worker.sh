@@ -64,8 +64,14 @@ if [ -n "$CHANNEL_ID" ] && [ "$CHANNEL_ID" != "null" ]; then
   echo "Discord channel deleted."
 fi
 
-# Archive worker directory
-ARCHIVE_DIR="$ONKOL_DIR/workers/.archive/${DATE}-${WORKER_NAME}"
+# Archive worker directory (append counter if archive already exists from same day)
+ARCHIVE_BASE="$ONKOL_DIR/workers/.archive/${DATE}-${WORKER_NAME}"
+ARCHIVE_DIR="$ARCHIVE_BASE"
+COUNTER=1
+while [ -d "$ARCHIVE_DIR" ]; do
+  ARCHIVE_DIR="${ARCHIVE_BASE}-${COUNTER}"
+  COUNTER=$((COUNTER + 1))
+done
 mkdir -p "$ONKOL_DIR/workers/.archive"
 mv "$WORKER_DIR" "$ARCHIVE_DIR"
 echo "Worker directory archived to $ARCHIVE_DIR"

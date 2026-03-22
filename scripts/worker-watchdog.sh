@@ -76,12 +76,13 @@ llm_analyze() {
 
 Keys:
 - status: one of: working, done_replied, done_silent, error, idle
-- action: one of: none, nudge_reply, nudge_error, nudge_idle
+- action: one of: none, nudge_reply, nudge_error, nudge_idle, progress_update
 - reason: one short sentence explaining your assessment
+- summary: (ONLY when action is progress_update) A brief 1-2 sentence user-facing summary of what the worker is currently doing. Be specific — mention file names, tools being run, or operations in progress. Example: \"Reading agent config files and analyzing the call flow pipeline.\" or \"Running TypeScript type-check after modifying 4 frontend components.\"
 
 Rules (check in this order):
 1. done_replied: If ANYWHERE in the output you see 'discord-filtered - reply (MCP)' or 'discord-filtered - reply_with_file (MCP)' followed by 'sent', the worker HAS replied. Status=done_replied, Action=none. This takes priority — even if the worker is now idle at the prompt, if it replied earlier it is done_replied NOT idle.
-2. working: Claude is actively executing tools, thinking, or generating output (not at the idle prompt). Action: none
+2. working: Claude is actively executing tools, thinking, or generating output (not at the idle prompt). Action=progress_update. Include a summary field.
 3. error: Worker hit a fatal error and stopped (Traceback, FATAL, crash at the prompt). Action: nudge_error. Errors from EARLIER that the worker recovered from do NOT count — only errors right before the current prompt.
 4. done_silent: Worker finished work (wrote files, completed analysis, etc.) but NEVER used the reply MCP tool anywhere in the visible output. Action: nudge_reply
 5. idle: Worker is sitting at the prompt with no clear completion, no error, and no reply tool usage. Action: nudge_idle
@@ -104,7 +105,7 @@ ${pane_content}" \
         {role: "user", content: $user}
       ],
       temperature: 0,
-      max_tokens: 150
+      max_tokens: 250
     }')
 
   local response
@@ -153,9 +154,9 @@ jq -r '.[] | select(.status == "active") | .name' "$TRACKING" | while read -r WO
     continue
   fi
 
-  # Check nudge cooldown (don't analyze more than once per 10 minutes per worker)
+  # Check nudge cooldown (don't analyze more than once per 3 minutes per worker)
   NUDGE_FLAG="$WORKER_DIR/.watchdog-last-nudge"
-  if [ -f "$NUDGE_FLAG" ] && [ -z "$(find "$NUDGE_FLAG" -mmin +10 2>/dev/null)" ]; then
+  if [ -f "$NUDGE_FLAG" ] && [ -z "$(find "$NUDGE_FLAG" -mmin +3 2>/dev/null)" ]; then
     continue
   fi
 
@@ -165,7 +166,16 @@ jq -r '.[] | select(.status == "active") | .name' "$TRACKING" | while read -r WO
   STATUS=$(echo "$ANALYSIS" | jq -r '.status // "unknown"')
   REASON=$(echo "$ANALYSIS" | jq -r '.reason // ""')
 
+  SUMMARY=$(echo "$ANALYSIS" | jq -r '.summary // ""')
+
   case "$ACTION" in
+    progress_update)
+      # Worker is actively working — post a progress summary to its channel
+      if [ -n "$SUMMARY" ]; then
+        touch "$NUDGE_FLAG"
+        discord_msg "$WORKER_CHANNEL" "⏳ $SUMMARY"
+      fi
+      ;;
     nudge_reply)
       touch "$NUDGE_FLAG"
       tmux send-keys -t "$TMUX_TARGET" \
@@ -188,7 +198,7 @@ jq -r '.[] | select(.status == "active") | .name' "$TRACKING" | while read -r WO
         "[watchdog] Worker **${WORKER}** — $REASON. Nudged it to respond."
       ;;
     none|*)
-      # Worker is fine (working or already replied) — do nothing
+      # Worker is fine (already replied) — do nothing
       ;;
   esac
 done

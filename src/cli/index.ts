@@ -51,11 +51,81 @@ function markStep(homeDir: string, checkpoint: SetupCheckpoint, step: string): v
   saveCheckpoint(homeDir, checkpoint)
 }
 
+function checkDependencies(): void {
+  console.log(chalk.bold('Checking dependencies...\n'))
+
+  interface Dep {
+    name: string
+    check: string
+    installHint: string
+    required: boolean
+  }
+
+  const deps: Dep[] = [
+    {
+      name: 'claude',
+      check: 'claude --version',
+      installHint: 'Install Claude Code: https://docs.anthropic.com/en/docs/claude-code/getting-started',
+      required: true,
+    },
+    {
+      name: 'bun',
+      check: 'bun --version',
+      installHint: 'Install Bun: curl -fsSL https://bun.sh/install | bash',
+      required: true,
+    },
+    {
+      name: 'tmux',
+      check: 'tmux -V',
+      installHint: 'Install tmux:\n    Ubuntu/Debian: sudo apt install tmux\n    RHEL/CentOS:  sudo yum install tmux\n    Arch:         sudo pacman -S tmux\n    macOS:        brew install tmux',
+      required: true,
+    },
+    {
+      name: 'jq',
+      check: 'jq --version',
+      installHint: 'Install jq:\n    Ubuntu/Debian: sudo apt install jq\n    RHEL/CentOS:  sudo yum install jq\n    Arch:         sudo pacman -S jq\n    macOS:        brew install jq',
+      required: true,
+    },
+    {
+      name: 'curl',
+      check: 'curl --version',
+      installHint: 'Install curl:\n    Ubuntu/Debian: sudo apt install curl\n    RHEL/CentOS:  sudo yum install curl',
+      required: true,
+    },
+  ]
+
+  const missing: Dep[] = []
+  for (const dep of deps) {
+    try {
+      execSync(dep.check, { stdio: 'pipe' })
+      console.log(chalk.green(`  ✓ ${dep.name}`))
+    } catch {
+      console.log(chalk.red(`  ✗ ${dep.name} — not found`))
+      missing.push(dep)
+    }
+  }
+
+  if (missing.length > 0) {
+    console.log(chalk.red(`\nMissing ${missing.length} required dependencies:\n`))
+    for (const dep of missing) {
+      console.log(chalk.yellow(`  ${dep.name}:`))
+      console.log(chalk.gray(`    ${dep.installHint}\n`))
+    }
+    console.log(chalk.red('Install the missing dependencies and run `npx onkol setup` again.'))
+    process.exit(1)
+  }
+
+  console.log(chalk.green('\n  All dependencies found.\n'))
+}
+
 program
   .command('setup')
   .description('Set up an Onkol node on this VM')
   .action(async () => {
     console.log(chalk.bold('\nWelcome to Onkol Setup\n'))
+
+    // Check all dependencies before doing anything
+    checkDependencies()
 
     const homeDir = process.env.HOME || '/root'
     let answers: import('./prompts.js').SetupAnswers
@@ -379,14 +449,32 @@ program
       } catch { /* ignore */ }
     }
 
-    // Start orchestrator
+    // Start orchestrator — try systemctl first (so service shows active), fall back to script
     console.log(chalk.gray('\nStarting orchestrator...'))
+    let started = false
     try {
-      execSync(`bash "${resolve(dir, 'scripts/start-orchestrator.sh')}"`, { stdio: 'pipe' })
-      console.log(chalk.green(`✓ Orchestrator started in tmux session "onkol-${answers.nodeName}"`))
-    } catch (err) {
-      console.log(chalk.yellow(`⚠ Could not start orchestrator automatically.`))
-      console.log(chalk.yellow(`  Start manually: ${dir}/scripts/start-orchestrator.sh`))
+      execSync(`sudo systemctl start onkol-${answers.nodeName}`, { stdio: 'pipe' })
+      // Wait for tmux session to appear
+      for (let i = 0; i < 10; i++) {
+        try {
+          execSync(`tmux has-session -t onkol-${answers.nodeName}`, { stdio: 'pipe' })
+          started = true
+          break
+        } catch { /* not ready yet */ }
+        execSync('sleep 1', { stdio: 'pipe' })
+      }
+      if (started) {
+        console.log(chalk.green(`✓ Orchestrator started via systemd (tmux session "onkol-${answers.nodeName}")`))
+      }
+    } catch { /* systemctl start failed, try direct */ }
+    if (!started) {
+      try {
+        execSync(`bash "${resolve(dir, 'scripts/start-orchestrator.sh')}"`, { stdio: 'pipe' })
+        console.log(chalk.green(`✓ Orchestrator started in tmux session "onkol-${answers.nodeName}"`))
+      } catch {
+        console.log(chalk.yellow(`⚠ Could not start orchestrator automatically.`))
+        console.log(chalk.yellow(`  Start manually: ${dir}/scripts/start-orchestrator.sh`))
+      }
     }
 
     // Setup complete — clear checkpoint

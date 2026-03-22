@@ -453,27 +453,43 @@ program
     console.log(chalk.gray('\nStarting orchestrator...'))
     let started = false
     try {
-      execSync(`sudo systemctl start onkol-${answers.nodeName}`, { stdio: 'pipe' })
-      // Wait for tmux session to appear
-      for (let i = 0; i < 10; i++) {
+      execSync(`sudo systemctl start onkol-${answers.nodeName}`, { stdio: 'pipe', timeout: 60000 })
+      // Wait for tmux session to appear (the start script itself verifies, but double-check)
+      for (let i = 0; i < 5; i++) {
         try {
           execSync(`tmux has-session -t onkol-${answers.nodeName}`, { stdio: 'pipe' })
           started = true
           break
         } catch { /* not ready yet */ }
-        execSync('sleep 1', { stdio: 'pipe' })
+        execSync('sleep 2', { stdio: 'pipe' })
       }
       if (started) {
         console.log(chalk.green(`✓ Orchestrator started via systemd (tmux session "onkol-${answers.nodeName}")`))
+      } else {
+        // systemctl succeeded but tmux session not visible — likely PATH or env issue
+        console.log(chalk.yellow(`⚠ systemctl started but tmux session not found. Trying direct start...`))
+        try {
+          const logs = execSync(`sudo journalctl -u onkol-${answers.nodeName} --no-pager -n 10 2>&1`, { encoding: 'utf-8' })
+          if (logs.trim()) console.log(chalk.gray(`  Journal: ${logs.trim().split('\n').slice(-3).join('\n  ')}`))
+        } catch { /* ignore */ }
       }
-    } catch { /* systemctl start failed, try direct */ }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.log(chalk.yellow(`⚠ systemctl start failed: ${msg.split('\n')[0]}`))
+    }
     if (!started) {
       try {
-        execSync(`bash "${resolve(dir, 'scripts/start-orchestrator.sh')}"`, { stdio: 'pipe' })
+        execSync(`bash "${resolve(dir, 'scripts/start-orchestrator.sh')}"`, { stdio: 'pipe', timeout: 60000 })
+        // Verify the session is actually running
+        execSync(`tmux has-session -t onkol-${answers.nodeName}`, { stdio: 'pipe' })
+        started = true
         console.log(chalk.green(`✓ Orchestrator started in tmux session "onkol-${answers.nodeName}"`))
       } catch {
-        console.log(chalk.yellow(`⚠ Could not start orchestrator automatically.`))
-        console.log(chalk.yellow(`  Start manually: ${dir}/scripts/start-orchestrator.sh`))
+        console.log(chalk.red(`✗ Could not start orchestrator. The tmux session failed to stay alive.`))
+        console.log(chalk.yellow(`  Debug steps:`))
+        console.log(chalk.yellow(`    1. Run manually: bash ${dir}/scripts/start-orchestrator.sh`))
+        console.log(chalk.yellow(`    2. Check: tmux attach -t onkol-${answers.nodeName}`))
+        console.log(chalk.yellow(`    3. Verify claude works: claude --version`))
       }
     }
 

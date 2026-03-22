@@ -1,20 +1,35 @@
 export function generateSystemdUnit(nodeName: string, user: string, onkolDir: string): string {
+  // Resolve PATH additions for claude and bun at generation time
+  const homeDir = process.env.HOME || `/home/${user}`
+  const extraPaths = [
+    `${homeDir}/.local/bin`,
+    `${homeDir}/.bun/bin`,
+  ].filter(p => {
+    try { return require('fs').existsSync(p) } catch { return false }
+  })
+  const pathEnv = extraPaths.length > 0
+    ? `Environment=PATH=${extraPaths.join(':')}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+    : ''
+
   return `[Unit]
 Description=Onkol Node: ${nodeName}
 After=network.target
 
 [Service]
-Type=forking
+Type=oneshot
+RemainAfterExit=yes
 User=${user}
+${pathEnv}
+Environment=HOME=${homeDir}
 ExecStart=${onkolDir}/scripts/start-orchestrator.sh
 ExecStop=/usr/bin/tmux kill-session -t onkol-${nodeName}
-Restart=on-failure
-RestartSec=10
+TimeoutStartSec=60
 
 [Install]
 WantedBy=multi-user.target
 `
 }
+
 
 export function generateCrontab(onkolDir: string): string {
   return `*/5 * * * * ${onkolDir}/scripts/healthcheck.sh

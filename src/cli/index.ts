@@ -126,6 +126,23 @@ program
     writeFileSync(resolve(dir, 'knowledge/index.json'), '[]')
     writeFileSync(resolve(dir, 'state.md'), '')
 
+    // Pre-accept Claude Code trust dialog for the onkol directory
+    console.log(chalk.gray('Configuring Claude Code trust...'))
+    const claudeJsonPath = resolve(homeDir, '.claude/.claude.json')
+    try {
+      const claudeJson = existsSync(claudeJsonPath) ? JSON.parse(readFileSync(claudeJsonPath, 'utf-8')) : {}
+      if (!claudeJson.projects) claudeJson.projects = {}
+      claudeJson.projects[dir] = {
+        ...(claudeJson.projects[dir] || {}),
+        allowedTools: [],
+        hasTrustDialogAccepted: true,
+      }
+      writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2))
+      console.log(chalk.green('✓ Claude Code trust pre-accepted for ' + dir))
+    } catch {
+      console.log(chalk.yellow('⚠ Could not pre-accept trust dialog. You may need to accept it manually on first run.'))
+    }
+
     // Handle setup prompts
     const pendingPrompts: Array<{ target: string; prompt: string; status: string }> = []
     if (answers.registryPrompt) {

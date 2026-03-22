@@ -192,12 +192,32 @@ TMUX_TARGET="${TMUX_SESSION}:${WORKER_NAME}"
   done
 ) &
 
+# Copy .mcp.json to work directory so claude auto-discovers the MCP server.
+# --mcp-config registers servers under a different namespace that
+# --dangerously-load-development-channels doesn't find. The .mcp.json in cwd works.
+# Save any existing .mcp.json and restore on exit.
+WORK_MCP="$WORK_DIR/.mcp.json"
+WORK_MCP_BACKUP=""
+if [ -f "\$WORK_MCP" ]; then
+  WORK_MCP_BACKUP="\${WORK_MCP}.onkol-backup"
+  cp "\$WORK_MCP" "\$WORK_MCP_BACKUP"
+fi
+cp "$WORKER_DIR/.mcp.json" "\$WORK_MCP"
+
+cleanup() {
+  if [ -n "\$WORK_MCP_BACKUP" ]; then
+    mv "\$WORK_MCP_BACKUP" "\$WORK_MCP"
+  else
+    rm -f "\$WORK_MCP"
+  fi
+}
+trap cleanup EXIT
+
 # Start claude (no positional prompt — startup instructions are in CLAUDE.md,
 # and the auto-acceptor sends the first prompt via tmux keys once claude is ready)
 cd "$WORK_DIR" && claude \\
   --dangerously-skip-permissions \\
-  --dangerously-load-development-channels server:discord-filtered \\
-  --mcp-config "$WORKER_DIR/.mcp.json"
+  --dangerously-load-development-channels server:discord-filtered
 WRAPEOF
 chmod +x "$WRAPPER"
 

@@ -16,6 +16,10 @@ export interface SetupAnswers {
   claudeMdMode: 'prompt' | 'skip'
   claudeMdPrompt: string | null
   plugins: string[]
+  watchdogProvider: 'openrouter' | 'gemini' | 'custom' | 'skip'
+  watchdogModel: string | null
+  watchdogApiKey: string | null
+  watchdogApiUrl: string | null
 }
 
 function printDiscordBotGuide(): void {
@@ -186,9 +190,70 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
         { name: 'frontend-design', value: 'frontend-design', checked: false },
       ],
     },
+    {
+      type: 'list',
+      name: 'watchdogProvider',
+      message: 'Worker watchdog LLM (monitors workers, nudges if stuck/silent):',
+      choices: [
+        { name: 'OpenRouter (recommended — use any model via openrouter.ai)', value: 'openrouter' },
+        { name: 'Google Gemini (direct API)', value: 'gemini' },
+        { name: 'Custom OpenAI-compatible endpoint', value: 'custom' },
+        { name: 'Skip (disable LLM watchdog)', value: 'skip' },
+      ],
+    },
+    {
+      type: 'list',
+      name: 'watchdogModel',
+      message: 'Watchdog model:',
+      choices: (a: Record<string, unknown>) => {
+        const base = [
+          { name: 'google/gemini-2.5-flash (fast, cheap)', value: 'google/gemini-2.5-flash' },
+          { name: 'google/gemini-2.0-flash-001 (fast, cheap)', value: 'google/gemini-2.0-flash-001' },
+          { name: 'anthropic/claude-haiku (fast)', value: 'anthropic/claude-3-5-haiku-20241022' },
+          { name: 'Custom — enter model ID', value: '__custom__' },
+        ]
+        if (a.watchdogProvider === 'gemini') {
+          return [
+            { name: 'gemini-2.5-flash-preview-05-20 (recommended)', value: 'gemini-2.5-flash-preview-05-20' },
+            { name: 'gemini-2.0-flash', value: 'gemini-2.0-flash' },
+            { name: 'Custom — enter model ID', value: '__custom__' },
+          ]
+        }
+        return base
+      },
+      when: (a: Record<string, unknown>) => a.watchdogProvider !== 'skip',
+    },
+    {
+      type: 'input',
+      name: 'watchdogModelCustom',
+      message: 'Enter model ID:',
+      when: (a: Record<string, unknown>) => a.watchdogProvider !== 'skip' && a.watchdogModel === '__custom__',
+    },
+    {
+      type: 'password',
+      name: 'watchdogApiKey',
+      message: (a: Record<string, unknown>) => {
+        if (a.watchdogProvider === 'openrouter') return 'OpenRouter API key (sk-or-...):'
+        if (a.watchdogProvider === 'gemini') return 'Google Gemini API key:'
+        return 'API key:'
+      },
+      mask: '*',
+      when: (a: Record<string, unknown>) => a.watchdogProvider !== 'skip',
+    },
+    {
+      type: 'input',
+      name: 'watchdogApiUrl',
+      message: 'API base URL (OpenAI-compatible, e.g. https://api.example.com/v1/chat/completions):',
+      when: (a: Record<string, unknown>) => a.watchdogProvider === 'custom',
+    },
   ])
 
   const answers = { ...preDiscordAnswers, ...discordAndRestAnswers }
+
+  // Resolve custom model selection
+  const watchdogModel = answers.watchdogModel === '__custom__'
+    ? (answers.watchdogModelCustom || null)
+    : (answers.watchdogModel || null)
 
   return {
     ...answers,
@@ -197,5 +262,8 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
     serviceSummaryPath: answers.serviceSummaryPath || null,
     servicesPrompt: answers.servicesPrompt || null,
     claudeMdPrompt: answers.claudeMdPrompt || null,
+    watchdogModel,
+    watchdogApiKey: answers.watchdogApiKey || null,
+    watchdogApiUrl: answers.watchdogApiUrl || null,
   } as SetupAnswers
 }

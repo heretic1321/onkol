@@ -239,6 +239,14 @@ program
         maxWorkers: 3,
         installDir: dir,
         plugins: answers.plugins,
+        ...(answers.watchdogProvider !== 'skip' ? {
+          watchdog: {
+            provider: answers.watchdogProvider,
+            model: answers.watchdogModel,
+            apiKey: answers.watchdogApiKey,
+            ...(answers.watchdogApiUrl ? { apiUrl: answers.watchdogApiUrl } : {}),
+          },
+        } : {}),
       }
       writeFileSync(resolve(dir, 'config.json'), JSON.stringify(config, null, 2), { mode: 0o600 })
       markStep(homeDir, checkpoint, 'config')

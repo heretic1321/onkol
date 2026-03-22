@@ -4,8 +4,14 @@
   "description": "Decentralized on-call agent system powered by Claude Code",
   "type": "module",
   "bin": {
-    "onkol": "./dist/cli/index.js"
+    "onkol": "dist/cli/index.js"
   },
+  "files": [
+    "dist/",
+    "scripts/",
+    "templates/",
+    "src/plugin/"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "bun test",

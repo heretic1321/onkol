@@ -108,8 +108,19 @@ Read your context: $WORKER_DIR/context.md
 ## Intent: $INTENT
 $INTENT_INSTRUCTION
 
+## CRITICAL: How to Communicate
+You are connected to Discord via the discord-filtered MCP channel.
+ALL your output must go through the reply tool — the user CANNOT see your terminal.
+
+- Use the \`reply\` tool from the discord-filtered MCP server to send ALL messages to the user.
+- NEVER just print output to the terminal. The user only sees Discord.
+- Send progress updates via reply tool as you work.
+- Send your final report/results via reply tool.
+- If you need to ask a question, use the reply tool. The user will respond via Discord.
+- For long reports, split into multiple reply calls (Discord has a 2000 char limit per message).
+
 ## Rules
-- If you get stuck, ask in this channel. A human will respond.
+- If you get stuck, ask via the reply tool. A human will respond via Discord.
 - Update your status in $WORKER_DIR/status.json periodically
 - Before dissolution, write learnings to $WORKER_DIR/learnings.md
 CLEOF

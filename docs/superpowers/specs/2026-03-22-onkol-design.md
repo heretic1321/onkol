@@ -40,22 +40,27 @@ Each VM runs:
 - One persistent orchestrator Claude Code session (in tmux, managed by systemd)
 - Zero or more ephemeral worker Claude Code sessions (in tmux windows, managed by orchestrator)
 - One shared Discord bot token across all sessions on that VM
-- The custom `discord-filtered` MCP channel plugin for routing
+- The custom `discord-filtered` MCP channel plugin for routing (all sessions use this plugin — orchestrator and workers alike, each configured with their own channel ID)
+
+> **Implementation note:** The official Discord plugin may already support per-channel filtering via its `access.json` groups and `DISCORD_STATE_DIR` for multi-instance state separation. During implementation, investigate this first. If sufficient, replace `discord-filtered` with configured instances of the official plugin, eliminating ~200-400 lines of custom code. If insufficient (e.g., pairing flow too interactive for automated worker spawning), proceed with the custom plugin.
+
+> **Channels research preview note:** Custom channel plugins require the `--dangerously-load-development-channels` flag during the research preview. The setup wizard and spawn scripts must handle this flag. When Channels graduates from research preview, this flag will no longer be needed.
 
 ### Component Overview
 
 | Component | Purpose | Size |
 |---|---|---|
 | `npx onkol setup` | Interactive setup wizard, one-time per VM | ~400 lines TS |
-| `discord-filtered` plugin | Custom MCP channel server, routes by channel ID | ~200 lines TS |
-| `spawn-worker.sh` | Creates Discord channel, worker dir, starts CC session | ~80 lines bash |
-| `dissolve-worker.sh` | Captures learnings, kills session, cleans up | ~60 lines bash |
-| `list-workers.sh` / `check-worker.sh` | Status utilities | ~40 lines bash |
+| `discord-filtered` plugin | Custom MCP channel server, routes by channel ID | ~300-400 lines TS |
+| `spawn-worker.sh` | Creates Discord channel, worker dir, starts CC session | ~120-150 lines bash |
+| `dissolve-worker.sh` | Captures learnings, kills session, cleans up | ~80 lines bash |
+| `list-workers.sh` / `check-worker.sh` | Status utilities | ~50 lines bash |
+| `healthcheck.sh` | Cron-based worker health monitor | ~30 lines bash |
 | Orchestrator CLAUDE.md | Instructions for the orchestrator | ~100 lines markdown |
 | Worker CLAUDE.md template | Generated per-task by orchestrator | ~50 lines markdown |
 | Knowledge base | Files + index.json | Data, not code |
 
-**Total custom code: ~830 lines.**
+**Total custom code: ~1200 lines.** (If official Discord plugin's channel filtering works, subtract ~300-400 lines.)
 
 ## Directory Structure
 
@@ -82,12 +87,13 @@ Each Onkol Node lives at `/home/{user}/onkol/` (configurable during setup):
 │       ├── status.json      # Worker's self-reported progress
 │       ├── learnings.md     # What this worker learned (written before dissolution)
 │       └── bash-log.txt     # All bash commands executed (audit trail)
-│   └── .archive/            # Dissolved worker directories (for reference)
+│   └── .archive/            # Dissolved worker directories (timestamped: {date}-{name}/)
 ├── scripts/
 │   ├── spawn-worker.sh
 │   ├── dissolve-worker.sh
 │   ├── list-workers.sh
-│   └── check-worker.sh
+│   ├── check-worker.sh
+│   └── healthcheck.sh      # Cron-based worker health monitor
 ├── plugins/
 │   └── discord-filtered/
 │       ├── index.ts         # Custom MCP channel plugin
@@ -168,11 +174,15 @@ Claude calls reply_with_file tool
 
 **Message batching:** Buffer outgoing messages for 3 seconds to avoid Discord rate limits (5 messages/second/channel). Combine multiple rapid replies into one message.
 
-**Gateway connections:** Each plugin instance creates its own Discord gateway connection. With ~30 max concurrent connections (10 VMs, ~3 workers each), this is well within Discord's ~1000 connection limit per bot.
+**Gateway connections:** Each plugin instance creates its own Discord gateway connection. With ~30 max concurrent connections (10 VMs, ~3 workers each), this is well within Discord's limits.
+
+> **Discord IDENTIFY rate limit:** Each new gateway connection requires an IDENTIFY call. Discord allows ~1000 IDENTIFY calls per 24 hours per bot. Normal operation (~50-100 worker spawns/day across all VMs) is well within this. However, crash loops or rapid respawning could burn through the budget. If the IDENTIFY limit is hit, Discord terminates ALL active sessions. Mitigation: spawn scripts should implement backoff on connection failures, and the orchestrator should cap worker spawn rate.
+>
+> **Future optimization:** A single gateway connection per VM that routes to multiple sessions (via local IPC) would reduce gateway connections from N-per-VM to 1-per-VM. Deferred to V2.
 
 ### 3. Orchestrator Claude Code Session
 
-A persistent Claude Code session running in tmux, connected to Discord via the official Discord channel plugin, listening in the #orchestrator channel of its category.
+A persistent Claude Code session running in tmux, connected to Discord via the `discord-filtered` channel plugin (configured with the #orchestrator channel ID), listening in the #orchestrator channel of its category.
 
 **What it does:**
 - Receives task descriptions from the user via Discord
@@ -208,20 +218,27 @@ The orchestrator reads intent from how the user phrases their message:
 - Long tasks (15+ minutes): Milestone updates every 10 minutes
 - If stuck: Ask immediately, block until human responds
 
-**Periodic health check (via CLAUDE.md instructions):**
+**Health checks (two mechanisms):**
 
-Every time the orchestrator receives a message, it also checks:
+*Reactive (on every message):* Every time the orchestrator receives a message, it also checks:
 1. Read `tracking.json` for active workers
 2. Check if each worker's tmux window still exists
 3. If a worker died, report it and ask what to do
+
+*Proactive (cron-based):* A cron job runs `healthcheck.sh` every 5 minutes:
+1. Checks tmux windows against `tracking.json`
+2. If discrepancy found, sends a message to the orchestrator's Discord channel via `curl` + bot token
+3. This triggers the orchestrator's reactive detection logic
+4. Ensures dead workers are detected even when no one is messaging
 
 **Startup routine (after restart/fresh session):**
 
 1. Read config.json, registry.json, services.md
 2. Read workers/tracking.json for active workers
-3. Read knowledge/index.json for available learnings
-4. Read state.md for any pending decisions from before restart
-5. Post in #orchestrator: "{name} is online. {N} active workers."
+3. For each tracked worker, verify tmux window exists. If not, clean up orphaned Discord channels via Discord API and mark worker as dead in tracking.json.
+4. Read knowledge/index.json for available learnings
+5. Read state.md for any pending decisions from before restart
+6. Post in #orchestrator: "{name} is online. {N} active workers. {M} workers lost during downtime."
 
 ### 4. Worker Claude Code Sessions
 
@@ -241,24 +258,30 @@ Ephemeral Claude Code sessions spawned by the orchestrator to handle specific ta
    - Instructions to write learnings before dissolution
 6. Write `task.md` with the full task brief
 7. Write `context.md` with relevant excerpts from registry, services, knowledge
-8. Start Claude Code in tmux:
+8. Start Claude Code in tmux as an interactive session with channels and an initial prompt:
    ```
    tmux new-window -t onkol -n "{name}" \
      "cd {dir} && claude \
-       --channels server:discord-filtered \
-       -p 'Read /onkol/workers/{name}/task.md and /onkol/workers/{name}/context.md, then begin work.'"
+       --dangerously-load-development-channels server:discord-filtered \
+       --mcp-config /home/{user}/onkol/workers/{name}/.mcp.json \
+       --allowedTools 'Bash,Read,Edit,Write,Glob,Grep' \
+       'Read /home/{user}/onkol/workers/{name}/task.md and context.md, then begin work.'"
    ```
+   > **Note:** The `-p` (print/headless) flag is NOT used here. `-p` runs non-interactively and exits after one prompt, which is incompatible with `--channels` (which requires a persistent session to receive Discord messages). Instead, the initial prompt is passed as a positional argument to the interactive session.
+   > **Note:** `--dangerously-load-development-channels` is required during the Channels research preview for custom plugins. This flag may prompt for confirmation — the spawn script should handle this (e.g., via `yes |` pipe or by pre-accepting in Claude Code settings).
 9. Update tracking.json with worker info
 
 **Worker permissions by intent:**
 
-| Intent | Allowed tools |
-|---|---|
-| fix | Bash, Read, Edit, Write, Glob, Grep |
-| investigate | Bash (read-only commands), Read, Glob, Grep |
-| build | Bash, Read, Edit, Write, Glob, Grep |
-| analyze | Read, Glob, Grep, Bash (read-only commands) |
-| override | Bash, Read, Edit, Write, Glob, Grep (unrestricted) |
+| Intent | `--allowedTools` | CLAUDE.md soft restriction |
+|---|---|---|
+| fix | Bash, Read, Edit, Write, Glob, Grep | None |
+| investigate | Bash, Read, Glob, Grep | "Do NOT modify files. Only read, search, and run read-only commands." |
+| build | Bash, Read, Edit, Write, Glob, Grep | None |
+| analyze | Bash, Read, Glob, Grep | "Do NOT modify files. Only read, search, and run read-only commands." |
+| override | Bash, Read, Edit, Write, Glob, Grep | "Full autonomy including push and deploy." Requires confirmation: "About to deploy. Confirm?" |
+
+> **Enforcement model:** Claude Code's `--allowedTools` flag controls which tools are available (hard enforcement). For investigate/analyze intents, Edit and Write are excluded entirely. Within Bash, "read-only" is enforced via CLAUDE.md instructions (soft enforcement). For additional safety, a `PreToolUse` hook can inspect bash commands and block write operations (e.g., `rm`, `mv`, `git push`) for restricted intents.
 
 **Worker self-reporting:**
 
@@ -279,7 +302,7 @@ Workers update their `status.json` periodically:
 3. Update `knowledge/index.json` with new entry (tags, summary, project path)
 4. Kill the worker's tmux window
 5. Delete the Discord channel via Discord API
-6. Move worker directory to `/onkol/workers/.archive/{name}/`
+6. Move worker directory to `/onkol/workers/.archive/{date}-{name}/` (timestamped to avoid collisions if same task name is reused)
 7. Remove worker from tracking.json
 
 ### 5. Knowledge Base
@@ -328,8 +351,9 @@ tags: [auth, token, clock-skew, 403]
 
 | Knowledge base size | Search method |
 |---|---|
-| < 200 entries | Orchestrator reads index.json, semantically picks relevant entries |
-| 200-1000 entries | Lightweight embedded vector search (ChromaDB or SQLite + embeddings) |
+| < 100 entries | Orchestrator reads full index.json, semantically picks relevant entries |
+| 100-500 entries | Tag/keyword matching via grep across knowledge files |
+| 500-1000 entries | Lightweight embedded vector search (ChromaDB or SQLite + embeddings) |
 | 1000+ entries | Proper RAG pipeline |
 
 The knowledge format is designed to be RAG-ready from day one. Upgrading the search layer requires no changes to the data.
@@ -370,14 +394,35 @@ Orchestrator detects orphaned workers by checking tmux windows against tracking.
 
 **Orchestrator crashes:**
 
-Systemd restarts it. Reads state from files. Active workers continue independently (separate tmux windows, separate Discord connections).
+Systemd restarts it via a wrapper script. Active workers continue independently (separate tmux windows, separate Discord connections).
 
 ```ini
+# /etc/systemd/system/onkol-{name}.service
+[Unit]
+Description=Onkol Node: {name}
+After=network.target
+
 [Service]
-ExecStart=/usr/bin/tmux new-session -d -s onkol-{name} \
-  "cd /home/{user}/onkol && claude --channels plugin:discord"
+Type=forking
+User={user}
+ExecStart=/home/{user}/onkol/scripts/start-orchestrator.sh
+ExecStop=/usr/bin/tmux kill-session -t onkol-{name}
 Restart=on-failure
 RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+# start-orchestrator.sh
+#!/bin/bash
+# Creates tmux session if not exists, starts orchestrator
+tmux has-session -t onkol-{name} 2>/dev/null || \
+  tmux new-session -d -s onkol-{name} \
+    "cd /home/{user}/onkol && claude \
+      --dangerously-load-development-channels server:discord-filtered \
+      --mcp-config /home/{user}/onkol/.mcp.json"
 ```
 
 **Discord rate limits:**
@@ -414,6 +459,32 @@ Each VM needs:
 4. **Worker isolation** — Each worker runs in its own directory with its own config. Workers cannot access other workers' state.
 5. **Audit trail** — All bash commands logged per worker. Knowledge base preserves what was done and why.
 6. **Registry secrets** — registry.json contains sensitive data. File permissions must be restricted. Workers receive only relevant excerpts via context.md, not the full registry.
+
+## Claude Code Usage Management
+
+With 10 VMs each running an orchestrator plus workers under a single claude.ai subscription, usage limits are a real concern.
+
+**Assumed subscription:** Claude Max ($100/month or $200/month) which provides higher usage caps.
+
+**Expected concurrent sessions:** 10 orchestrators (mostly idle, listening for messages) + 0-5 active workers at any time. Peak during incidents could be 10+ active workers simultaneously.
+
+**Rate limit handling:**
+- Orchestrators are low-usage — they mostly dispatch, not code. Each orchestrator interaction is a few messages.
+- Workers are high-usage — they read files, write code, run tests. A complex task could use significant context.
+- If a worker hits rate limits, it should report "Rate limited, pausing for X minutes" in its Discord channel rather than silently failing.
+- The orchestrator should avoid spawning more than 3-5 concurrent workers. If the limit is reached, queue tasks and notify the user: "Worker limit reached. Task queued, will start when a slot opens."
+
+**Worker concurrency limit:** Configurable in `config.json` (default: 3 per node). The orchestrator checks `tracking.json` before spawning. If at capacity, it queues the task and notifies the user.
+
+## Disk Usage Management
+
+Workers produce `bash-log.txt` files, knowledge files accumulate, and archived worker directories persist.
+
+**Cleanup strategy:**
+- `.archive/` directories: Auto-delete after 30 days (configurable). A cron job handles this.
+- `bash-log.txt`: Rotated per worker, deleted with archive cleanup.
+- Knowledge base: Retained indefinitely (this is the system's memory — don't delete).
+- Orchestrator session transcripts: Managed by Claude Code's own `cleanupPeriodDays` setting.
 
 ## Future Enhancements (Not in Scope for V1)
 

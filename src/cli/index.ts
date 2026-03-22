@@ -20,6 +20,37 @@ program
   .description('Decentralized on-call agent system')
   .version('0.1.0')
 
+interface SetupCheckpoint {
+  answers: import('./prompts.js').SetupAnswers
+  completed: string[]
+  categoryId?: string
+  orchChannelId?: string
+}
+
+function loadCheckpoint(homeDir: string): SetupCheckpoint | null {
+  const checkpointPath = resolve(homeDir, '.onkol-setup-checkpoint.json')
+  if (existsSync(checkpointPath)) {
+    try {
+      return JSON.parse(readFileSync(checkpointPath, 'utf-8'))
+    } catch { return null }
+  }
+  return null
+}
+
+function saveCheckpoint(homeDir: string, checkpoint: SetupCheckpoint): void {
+  writeFileSync(resolve(homeDir, '.onkol-setup-checkpoint.json'), JSON.stringify(checkpoint, null, 2))
+}
+
+function clearCheckpoint(homeDir: string): void {
+  const p = resolve(homeDir, '.onkol-setup-checkpoint.json')
+  if (existsSync(p)) { const { unlinkSync } = require('fs'); unlinkSync(p) }
+}
+
+function markStep(homeDir: string, checkpoint: SetupCheckpoint, step: string): void {
+  checkpoint.completed.push(step)
+  saveCheckpoint(homeDir, checkpoint)
+}
+
 program
   .command('setup')
   .description('Set up an Onkol node on this VM')
@@ -27,13 +58,47 @@ program
     console.log(chalk.bold('\nWelcome to Onkol Setup\n'))
 
     const homeDir = process.env.HOME || '/root'
-    const answers = await runSetupPrompts(homeDir)
+    let answers: import('./prompts.js').SetupAnswers
+    let checkpoint: SetupCheckpoint
+
+    // Check for existing checkpoint
+    const existing = loadCheckpoint(homeDir)
+    if (existing) {
+      const { resume } = await (await import('inquirer')).default.prompt([{
+        type: 'list',
+        name: 'resume',
+        message: `Found a previous setup attempt (${existing.completed.length} steps completed). What do you want to do?`,
+        choices: [
+          { name: `Resume from where it left off (node: ${existing.answers.nodeName})`, value: 'resume' },
+          { name: 'Start fresh', value: 'fresh' },
+        ],
+      }])
+      if (resume === 'resume') {
+        answers = existing.answers
+        checkpoint = existing
+        console.log(chalk.green(`Resuming setup for "${answers.nodeName}". Skipping ${checkpoint.completed.length} completed steps.\n`))
+      } else {
+        answers = await runSetupPrompts(homeDir)
+        checkpoint = { answers, completed: [] }
+        saveCheckpoint(homeDir, checkpoint)
+      }
+    } else {
+      answers = await runSetupPrompts(homeDir)
+      checkpoint = { answers, completed: [] }
+      saveCheckpoint(homeDir, checkpoint)
+    }
+
     const dir = resolve(answers.installDir)
 
+    const skip = (step: string) => checkpoint.completed.includes(step)
+
     // Create directory structure
-    console.log(chalk.gray('Creating directories...'))
-    for (const sub of ['knowledge', 'workers', 'workers/.archive', 'scripts', 'plugins/discord-filtered', '.claude']) {
-      mkdirSync(resolve(dir, sub), { recursive: true })
+    if (!skip('directories')) {
+      console.log(chalk.gray('Creating directories...'))
+      for (const sub of ['knowledge', 'workers', 'workers/.archive', 'scripts', 'plugins/discord-filtered', '.claude']) {
+        mkdirSync(resolve(dir, sub), { recursive: true })
+      }
+      markStep(homeDir, checkpoint, 'directories')
     }
 
     // Build allowed users list from Discord user ID prompt
@@ -44,124 +109,128 @@ program
     }
 
     // --- CRITICAL: Create Discord category and orchestrator channel ---
-    console.log(chalk.gray('Creating Discord category and channel...'))
-    let category: { id: string; name: string }
-    let orchChannel: { id: string; name: string }
-    try {
-      category = await createCategory(answers.botToken, answers.guildId, answers.nodeName)
-      orchChannel = await createChannel(answers.botToken, answers.guildId, 'orchestrator', category.id)
-    } catch (err) {
-      console.error(chalk.red(`\nFATAL: Could not create Discord category/channel.`))
-      console.error(chalk.red(`${err instanceof Error ? err.message : err}`))
-      console.error(chalk.red('\nCheck that:'))
-      console.error(chalk.red('  1. Your bot token is correct'))
-      console.error(chalk.red('  2. Your server (guild) ID is correct'))
-      console.error(chalk.red('  3. The bot has been invited to the server with "Manage Channels" permission'))
-      process.exit(1)
+    let categoryId = checkpoint.categoryId || ''
+    let orchChannelId = checkpoint.orchChannelId || ''
+    if (!skip('discord')) {
+      console.log(chalk.gray('Creating Discord category and channel...'))
+      try {
+        const category = await createCategory(answers.botToken, answers.guildId, answers.nodeName)
+        const orchChannel = await createChannel(answers.botToken, answers.guildId, 'orchestrator', category.id)
+        categoryId = category.id
+        orchChannelId = orchChannel.id
+        checkpoint.categoryId = categoryId
+        checkpoint.orchChannelId = orchChannelId
+        markStep(homeDir, checkpoint, 'discord')
+      } catch (err) {
+        console.error(chalk.red(`\nFATAL: Could not create Discord category/channel.`))
+        console.error(chalk.red(`${err instanceof Error ? err.message : err}`))
+        console.error(chalk.red('\nCheck that:'))
+        console.error(chalk.red('  1. Your bot token is correct'))
+        console.error(chalk.red('  2. Your server (guild) ID is correct'))
+        console.error(chalk.red('  3. The bot has been invited to the server with "Manage Channels" permission'))
+        console.error(chalk.yellow('\nYour answers have been saved. Fix the issue and run `npx onkol setup` again to resume.'))
+        process.exit(1)
+      }
+      console.log(chalk.green('✓ Discord category and #orchestrator channel created'))
+    } else {
+      console.log(chalk.gray('  Discord category already created, skipping'))
     }
-    console.log(chalk.green('✓ Discord category and #orchestrator channel created'))
 
     // Write config.json
-    const config = {
-      nodeName: answers.nodeName,
-      botToken: answers.botToken,
-      guildId: answers.guildId,
-      categoryId: category.id,
-      orchestratorChannelId: orchChannel.id,
-      allowedUsers,
-      maxWorkers: 3,
-      installDir: dir,
-      plugins: answers.plugins,
-    }
-    writeFileSync(resolve(dir, 'config.json'), JSON.stringify(config, null, 2), { mode: 0o600 })
-
-    // Handle registry
-    if (answers.registryMode === 'import' && answers.registryPath) {
-      copyFileSync(answers.registryPath, resolve(dir, 'registry.json'))
-    } else if (answers.registryMode !== 'prompt') {
-      writeFileSync(resolve(dir, 'registry.json'), '{}')
+    if (!skip('config')) {
+      const config = {
+        nodeName: answers.nodeName,
+        botToken: answers.botToken,
+        guildId: answers.guildId,
+        categoryId,
+        orchestratorChannelId: orchChannelId,
+        allowedUsers,
+        maxWorkers: 3,
+        installDir: dir,
+        plugins: answers.plugins,
+      }
+      writeFileSync(resolve(dir, 'config.json'), JSON.stringify(config, null, 2), { mode: 0o600 })
+      markStep(homeDir, checkpoint, 'config')
     }
 
-    // Handle services
-    let servicesMd = '# Services\n\nNo services configured yet.\n'
-    if (answers.serviceMode === 'auto') {
-      console.log(chalk.gray('Discovering services...'))
-      const services = discoverServices()
-      servicesMd = formatServicesMarkdown(services)
-      console.log(chalk.green(`Found ${services.length} services.`))
-    } else if (answers.serviceMode === 'import' && answers.serviceSummaryPath) {
-      servicesMd = readFileSync(answers.serviceSummaryPath, 'utf-8')
-    }
-    if (answers.serviceMode !== 'prompt') {
-      writeFileSync(resolve(dir, 'services.md'), servicesMd)
-    }
+    // Write files (registry, services, CLAUDE.md, settings, mcp.json, state)
+    if (!skip('files')) {
+      // Handle registry
+      if (answers.registryMode === 'import' && answers.registryPath) {
+        copyFileSync(answers.registryPath, resolve(dir, 'registry.json'))
+      } else if (answers.registryMode !== 'prompt') {
+        writeFileSync(resolve(dir, 'registry.json'), '{}')
+      }
 
-    // Generate CLAUDE.md
-    const claudeMd = renderOrchestratorClaude({ nodeName: answers.nodeName, maxWorkers: 3 })
-    writeFileSync(resolve(dir, 'CLAUDE.md'), claudeMd)
+      // Handle services
+      let servicesMd = '# Services\n\nNo services configured yet.\n'
+      if (answers.serviceMode === 'auto') {
+        console.log(chalk.gray('Discovering services...'))
+        const services = discoverServices()
+        servicesMd = formatServicesMarkdown(services)
+        console.log(chalk.green(`Found ${services.length} services.`))
+      } else if (answers.serviceMode === 'import' && answers.serviceSummaryPath) {
+        servicesMd = readFileSync(answers.serviceSummaryPath, 'utf-8')
+      }
+      if (answers.serviceMode !== 'prompt') {
+        writeFileSync(resolve(dir, 'services.md'), servicesMd)
+      }
 
-    // Generate .claude/settings.json
-    const settings = renderSettings({ bashLogPath: resolve(dir, 'bash-log.txt') })
-    writeFileSync(resolve(dir, '.claude/settings.json'), settings)
+      // Generate CLAUDE.md, settings, mcp.json, state files
+      writeFileSync(resolve(dir, 'CLAUDE.md'), renderOrchestratorClaude({ nodeName: answers.nodeName, maxWorkers: 3 }))
+      writeFileSync(resolve(dir, '.claude/settings.json'), renderSettings({ bashLogPath: resolve(dir, 'bash-log.txt') }))
 
-    // Write orchestrator .mcp.json
-    const pluginPath = resolve(dir, 'plugins/discord-filtered/index.ts')
-    const mcpJson = {
-      mcpServers: {
-        'discord-filtered': {
-          command: 'bun',
-          args: [pluginPath],
-          env: {
-            DISCORD_BOT_TOKEN: answers.botToken,
-            DISCORD_CHANNEL_ID: orchChannel.id,
-            DISCORD_ALLOWED_USERS: JSON.stringify(allowedUsers),
+      const pluginPath = resolve(dir, 'plugins/discord-filtered/index.ts')
+      const mcpJson = {
+        mcpServers: {
+          'discord-filtered': {
+            command: 'bun',
+            args: [pluginPath],
+            env: {
+              DISCORD_BOT_TOKEN: answers.botToken,
+              DISCORD_CHANNEL_ID: orchChannelId,
+              DISCORD_ALLOWED_USERS: JSON.stringify(allowedUsers),
+            },
           },
         },
-      },
-    }
-    writeFileSync(resolve(dir, '.mcp.json'), JSON.stringify(mcpJson, null, 2))
-
-    // Initialize tracking and knowledge index
-    writeFileSync(resolve(dir, 'workers/tracking.json'), '[]')
-    writeFileSync(resolve(dir, 'knowledge/index.json'), '[]')
-    writeFileSync(resolve(dir, 'state.md'), '')
-
-    // Pre-accept Claude Code trust dialog for the onkol directory
-    console.log(chalk.gray('Configuring Claude Code trust...'))
-    const claudeJsonPath = resolve(homeDir, '.claude/.claude.json')
-    try {
-      const claudeJson = existsSync(claudeJsonPath) ? JSON.parse(readFileSync(claudeJsonPath, 'utf-8')) : {}
-      if (!claudeJson.projects) claudeJson.projects = {}
-      claudeJson.projects[dir] = {
-        ...(claudeJson.projects[dir] || {}),
-        allowedTools: [],
-        hasTrustDialogAccepted: true,
       }
-      writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2))
-      console.log(chalk.green('✓ Claude Code trust pre-accepted for ' + dir))
-    } catch {
-      console.log(chalk.yellow('⚠ Could not pre-accept trust dialog. You may need to accept it manually on first run.'))
-    }
+      writeFileSync(resolve(dir, '.mcp.json'), JSON.stringify(mcpJson, null, 2))
+      if (!existsSync(resolve(dir, 'workers/tracking.json'))) writeFileSync(resolve(dir, 'workers/tracking.json'), '[]')
+      if (!existsSync(resolve(dir, 'knowledge/index.json'))) writeFileSync(resolve(dir, 'knowledge/index.json'), '[]')
+      if (!existsSync(resolve(dir, 'state.md'))) writeFileSync(resolve(dir, 'state.md'), '')
 
-    // Handle setup prompts
-    const pendingPrompts: Array<{ target: string; prompt: string; status: string }> = []
-    if (answers.registryPrompt) {
-      pendingPrompts.push({ target: 'registry.json', prompt: answers.registryPrompt, status: 'pending' })
-    }
-    if (answers.servicesPrompt) {
-      pendingPrompts.push({ target: 'services.md', prompt: answers.servicesPrompt, status: 'pending' })
-    }
-    if (answers.claudeMdPrompt) {
-      pendingPrompts.push({ target: 'CLAUDE.md', prompt: answers.claudeMdPrompt, status: 'pending' })
-    }
-    if (pendingPrompts.length > 0) {
-      writeFileSync(resolve(dir, 'setup-prompts.json'), JSON.stringify({ pending: pendingPrompts }, null, 2))
+      // Pre-accept Claude Code trust
+      console.log(chalk.gray('Configuring Claude Code trust...'))
+      const claudeJsonPath = resolve(homeDir, '.claude/.claude.json')
+      try {
+        const claudeJson = existsSync(claudeJsonPath) ? JSON.parse(readFileSync(claudeJsonPath, 'utf-8')) : {}
+        if (!claudeJson.projects) claudeJson.projects = {}
+        claudeJson.projects[dir] = { ...(claudeJson.projects[dir] || {}), allowedTools: [], hasTrustDialogAccepted: true }
+        writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2))
+        console.log(chalk.green('✓ Claude Code trust pre-accepted'))
+      } catch {
+        console.log(chalk.yellow('⚠ Could not pre-accept trust dialog.'))
+      }
+
+      // Handle setup prompts
+      const pendingPrompts: Array<{ target: string; prompt: string; status: string }> = []
+      if (answers.registryPrompt) pendingPrompts.push({ target: 'registry.json', prompt: answers.registryPrompt, status: 'pending' })
+      if (answers.servicesPrompt) pendingPrompts.push({ target: 'services.md', prompt: answers.servicesPrompt, status: 'pending' })
+      if (answers.claudeMdPrompt) pendingPrompts.push({ target: 'CLAUDE.md', prompt: answers.claudeMdPrompt, status: 'pending' })
+      if (pendingPrompts.length > 0) {
+        writeFileSync(resolve(dir, 'setup-prompts.json'), JSON.stringify({ pending: pendingPrompts }, null, 2))
+      }
+
+      markStep(homeDir, checkpoint, 'files')
+    } else {
+      console.log(chalk.gray('  Config files already written, skipping'))
     }
 
     // --- CRITICAL: Copy scripts ---
     const requiredScripts = ['spawn-worker.sh', 'dissolve-worker.sh', 'list-workers.sh', 'check-worker.sh', 'healthcheck.sh', 'start-orchestrator.sh']
     const scriptsSource = resolve(__dirname, '../../scripts')
-    console.log(chalk.gray('Copying scripts...'))
+    if (skip('scripts')) { console.log(chalk.gray('  Scripts already installed, skipping')) }
+    else { console.log(chalk.gray('Copying scripts...'))
     if (!existsSync(scriptsSource)) {
       console.error(chalk.red(`\nFATAL: Scripts directory not found at ${scriptsSource}`))
       console.error(chalk.red('The onkol package appears to be corrupted. Reinstall with: npm install -g onkol'))
@@ -178,13 +247,15 @@ program
       execSync(`chmod +x "${dst}"`)
     }
     console.log(chalk.green(`✓ ${requiredScripts.length} scripts installed`))
+    markStep(homeDir, checkpoint, 'scripts')
+    }
 
     // --- CRITICAL: Copy plugin source ---
-    // Look for .ts source files first (for bun), fall back to .js compiled files
     const pluginFiles = ['index', 'mcp-server', 'discord-client', 'message-batcher']
     const pluginSourceDir = resolve(__dirname, '../plugin')
     const projectSrcDir = resolve(__dirname, '../../src/plugin')
-    console.log(chalk.gray('Installing discord-filtered plugin...'))
+    if (skip('plugin')) { console.log(chalk.gray('  Plugin already installed, skipping')) }
+    else { console.log(chalk.gray('Installing discord-filtered plugin...'))
 
     let pluginCopied = 0
     for (const base of pluginFiles) {
@@ -226,7 +297,10 @@ program
     } catch {
       console.error(chalk.red('\nFATAL: Failed to install plugin dependencies.'))
       console.error(chalk.red('Is bun installed? Install with: curl -fsSL https://bun.sh/install | bash'))
+      console.error(chalk.yellow('\nYour progress has been saved. Fix the issue and run `npx onkol setup` again to resume.'))
       process.exit(1)
+    }
+    markStep(homeDir, checkpoint, 'plugin')
     }
 
     // Install systemd service
@@ -291,11 +365,18 @@ program
     }
 
     // Report pending setup prompts
-    if (pendingPrompts.length > 0) {
-      console.log(chalk.cyan('\nPending setup prompts saved. On first boot, the orchestrator will:'))
-      for (const p of pendingPrompts) {
-        console.log(chalk.cyan(`  - Generate ${p.target} from your ${p.target === 'CLAUDE.md' ? 'description' : 'prompt'}`))
-      }
+    const setupPromptsPath = resolve(dir, 'setup-prompts.json')
+    if (existsSync(setupPromptsPath)) {
+      try {
+        const sp = JSON.parse(readFileSync(setupPromptsPath, 'utf-8'))
+        const pending = (sp.pending || []).filter((p: any) => p.status === 'pending')
+        if (pending.length > 0) {
+          console.log(chalk.cyan('\nPending setup prompts saved. On first boot, the orchestrator will:'))
+          for (const p of pending) {
+            console.log(chalk.cyan(`  - Generate ${p.target} from your ${p.target === 'CLAUDE.md' ? 'description' : 'prompt'}`))
+          }
+        }
+      } catch { /* ignore */ }
     }
 
     // Start orchestrator
@@ -307,6 +388,9 @@ program
       console.log(chalk.yellow(`⚠ Could not start orchestrator automatically.`))
       console.log(chalk.yellow(`  Start manually: ${dir}/scripts/start-orchestrator.sh`))
     }
+
+    // Setup complete — clear checkpoint
+    clearCheckpoint(homeDir)
 
     // Done
     console.log(chalk.green.bold(`\n✓ Onkol node "${answers.nodeName}" is live!`))

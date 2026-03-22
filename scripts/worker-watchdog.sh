@@ -48,8 +48,10 @@ jq -r '.[] | select(.status == "active") | .name' "$TRACKING" | while read -r WO
   PANE=$(tmux capture-pane -t "$TMUX_TARGET" -p -S -20 2>/dev/null || echo "")
 
   # Check if worker has already used the reply tool (MCP) — if so, skip nudging
+  # tmux wraps long lines, so "reply (MCP)" and "sent" are on separate lines.
+  # Check for both the MCP tool call and the "sent" confirmation independently.
   HAS_REPLIED=false
-  if echo "$PANE_FULL" | grep -qE "reply.*\(MCP\).*sent|reply_with_file.*\(MCP\).*sent|discord-filtered.*reply.*sent"; then
+  if echo "$PANE_FULL" | grep -qE "discord-filtered - reply.*\(MCP\)" && echo "$PANE_FULL" | grep -qF "⎿  sent"; then
     HAS_REPLIED=true
   fi
 

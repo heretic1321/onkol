@@ -318,7 +318,7 @@ program
     }
 
     // --- CRITICAL: Copy scripts ---
-    const requiredScripts = ['spawn-worker.sh', 'dissolve-worker.sh', 'list-workers.sh', 'check-worker.sh', 'healthcheck.sh', 'start-orchestrator.sh']
+    const requiredScripts = ['spawn-worker.sh', 'dissolve-worker.sh', 'list-workers.sh', 'check-worker.sh', 'healthcheck.sh', 'worker-watchdog.sh', 'start-orchestrator.sh']
     const scriptsSource = resolve(__dirname, '../../scripts')
     if (skip('scripts')) { console.log(chalk.gray('  Scripts already installed, skipping')) }
     else { console.log(chalk.gray('Copying scripts...'))
@@ -438,12 +438,16 @@ program
           const timerDir = resolve(homeDir, '.config/systemd/user')
           mkdirSync(timerDir, { recursive: true })
           const healthcheckPath = resolve(dir, 'scripts/healthcheck.sh')
+          const watchdogPath = resolve(dir, 'scripts/worker-watchdog.sh')
           writeFileSync(resolve(timerDir, 'onkol-healthcheck.service'), `[Unit]\nDescription=Onkol healthcheck\n[Service]\nType=oneshot\nExecStart=${healthcheckPath}\n`)
           writeFileSync(resolve(timerDir, 'onkol-healthcheck.timer'), `[Unit]\nDescription=Onkol healthcheck every 5min\n[Timer]\nOnBootSec=2min\nOnUnitActiveSec=5min\n[Install]\nWantedBy=timers.target\n`)
+          writeFileSync(resolve(timerDir, 'onkol-worker-watchdog.service'), `[Unit]\nDescription=Onkol worker watchdog\n[Service]\nType=oneshot\nExecStart=${watchdogPath}\n`)
+          writeFileSync(resolve(timerDir, 'onkol-worker-watchdog.timer'), `[Unit]\nDescription=Onkol worker watchdog every 3min\n[Timer]\nOnBootSec=3min\nOnUnitActiveSec=3min\n[Install]\nWantedBy=timers.target\n`)
           writeFileSync(resolve(timerDir, 'onkol-cleanup.service'), `[Unit]\nDescription=Onkol archive cleanup\n[Service]\nType=oneshot\nExecStart=/usr/bin/find ${resolve(dir, 'workers/.archive')} -maxdepth 1 -mtime +30 -exec rm -rf {} \\;\n`)
           writeFileSync(resolve(timerDir, 'onkol-cleanup.timer'), `[Unit]\nDescription=Onkol archive cleanup daily\n[Timer]\nOnCalendar=*-*-* 04:00:00\n[Install]\nWantedBy=timers.target\n`)
           execSync('systemctl --user daemon-reload', { stdio: 'pipe' })
           execSync('systemctl --user enable --now onkol-healthcheck.timer', { stdio: 'pipe' })
+          execSync('systemctl --user enable --now onkol-worker-watchdog.timer', { stdio: 'pipe' })
           execSync('systemctl --user enable --now onkol-cleanup.timer', { stdio: 'pipe' })
         }
         console.log(chalk.green(`✓ Systemd user timers installed (healthcheck every 5min, cleanup daily)`))

@@ -177,8 +177,13 @@ cat >> "$WORKER_DIR/CLAUDE.md" << STARTEOF
 Immediately when you start:
 1. Read $WORKER_DIR/task.md for your task
 2. Read $WORKER_DIR/context.md for context
-3. Begin work according to your intent
-4. Report progress and results using the reply tool to your Discord channel
+3. Use the \`reply\` tool to send "Starting work on: <brief task summary>" to Discord
+4. Begin work — send progress updates via \`reply\` every few steps
+5. When done, send your full results/summary via \`reply\` (split into <2000 char messages)
+6. For file deliverables, use \`replyWithFile\` to attach them
+
+IMPORTANT: The user CANNOT see your terminal. The ONLY way to communicate is the reply tool.
+If you complete work without sending results via reply, the user will never see your output.
 Do NOT wait for a message. Start working as soon as you boot.
 STARTEOF
 
@@ -196,7 +201,7 @@ TMUX_TARGET="${TMUX_SESSION}:${WORKER_NAME}"
     if echo "\$PANE_CONTENT" | grep -q "^❯"; then
       # Claude is ready — send the initial prompt via tmux keys
       sleep 1
-      tmux send-keys -t "\$TMUX_TARGET" "Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, then begin work per CLAUDE.md." Enter
+      tmux send-keys -t "\$TMUX_TARGET" "Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, then begin work. IMPORTANT: You MUST use the reply tool from the discord-filtered MCP server for ALL communication — send a starting message now, progress updates as you work, and final results when done. The user cannot see your terminal." Enter
       break
     fi
     tmux send-keys -t "\$TMUX_TARGET" Enter 2>/dev/null || true

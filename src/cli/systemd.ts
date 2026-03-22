@@ -33,6 +33,7 @@ WantedBy=multi-user.target
 
 export function generateCrontab(onkolDir: string): string {
   return `*/5 * * * * ${onkolDir}/scripts/healthcheck.sh
+*/3 * * * * ${onkolDir}/scripts/worker-watchdog.sh
 0 4 * * * find ${onkolDir}/workers/.archive -maxdepth 1 -mtime +30 -exec rm -rf {} \\;
 `
 }

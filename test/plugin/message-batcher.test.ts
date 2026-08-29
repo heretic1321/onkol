@@ -37,11 +37,12 @@ describe('MessageBatcher', () => {
     expect(sent).toHaveLength(2)
   })
 
-  it('truncates messages over 2000 chars (Discord limit)', async () => {
+  it('splits messages over 2000 chars without losing content', async () => {
     const long = 'x'.repeat(2500)
     batcher.enqueue(long)
     await new Promise(r => setTimeout(r, 100))
-    expect(sent[0].length).toBeLessThanOrEqual(2000)
-    expect(sent[0]).toContain('... (truncated)')
+    expect(sent).toHaveLength(2)
+    expect(sent.every(chunk => chunk.length <= 2000)).toBe(true)
+    expect(sent.join('')).toBe(long)
   })
 })

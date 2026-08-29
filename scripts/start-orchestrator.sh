@@ -3,6 +3,9 @@ set -euo pipefail
 
 ONKOL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="$ONKOL_DIR/config.json"
+if [[ -f "$CONFIG" ]] && [[ "$(jq -r '.runtime // "claude"' "$CONFIG")" == "codex" ]]; then
+  exec "$ONKOL_DIR/scripts/start-codex-orchestrator.sh" "$@"
+fi
 NODE_NAME=$(jq -r '.nodeName' "$CONFIG")
 TMUX_SESSION="onkol-${NODE_NAME}"
 

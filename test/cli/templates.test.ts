@@ -8,6 +8,13 @@ describe('renderOrchestratorClaude', () => {
     expect(result).toContain('You do NOT solve tasks yourself')
     expect(result).toContain('Maximum 3 concurrent workers')
   })
+
+  it('renders provider-neutral Codex orchestrator instructions', () => {
+    const result = renderOrchestratorClaude({ nodeName: 'api-prod', maxWorkers: 5, runtime: 'codex' })
+    expect(result).toContain('worker codex sessions')
+    expect(result).toContain('scripts/spawn-worker.sh')
+    expect(result).toContain('Maximum 5 concurrent workers')
+  })
 })
 
 describe('renderSettings', () => {

@@ -1,7 +1,7 @@
 {
   "name": "onkol",
-  "version": "0.5.6",
-  "description": "Decentralized on-call agent system powered by Claude Code",
+  "version": "0.6.0",
+  "description": "Decentralized on-call agent system powered by Codex or Claude Code",
   "type": "module",
   "bin": {
     "onkol": "dist/cli/index.js"
@@ -9,6 +9,9 @@
   "files": [
     "dist/",
     "scripts/",
+    "runtime/codex/*.js",
+    "runtime/codex/package.json",
+    "runtime/codex/package-lock.json",
     "templates/",
     "src/plugin/"
   ],

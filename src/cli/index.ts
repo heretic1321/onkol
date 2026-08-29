@@ -9,7 +9,7 @@ import chalk from 'chalk'
 import { mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, unlinkSync } from 'fs'
 import { resolve } from 'path'
 import { execSync } from 'child_process'
-import { runSetupPrompts } from './prompts.js'
+import { chooseRuntime, runSetupPrompts, type AgentRuntime } from './prompts.js'
 import { createCategory, createChannel, validateBotToken, checkGatewayIntents } from './discord-api.js'
 import { discoverServices, formatServicesMarkdown } from './auto-discover.js'
 import { renderOrchestratorClaude, renderSettings } from './templates.js'
@@ -51,7 +51,7 @@ function markStep(homeDir: string, checkpoint: SetupCheckpoint, step: string): v
   saveCheckpoint(homeDir, checkpoint)
 }
 
-function checkDependencies(): void {
+function checkDependencies(runtime: AgentRuntime): void {
   console.log(chalk.bold('Checking dependencies...\n'))
 
   interface Dep {
@@ -66,13 +66,19 @@ function checkDependencies(): void {
       name: 'claude',
       check: 'claude --version',
       installHint: 'Install Claude Code: https://docs.anthropic.com/en/docs/claude-code/getting-started',
-      required: true,
+      required: runtime === 'claude',
     },
     {
       name: 'bun',
       check: 'bun --version',
       installHint: 'Install Bun: curl -fsSL https://bun.sh/install | bash',
-      required: true,
+      required: runtime === 'claude',
+    },
+    {
+      name: 'codex',
+      check: 'codex --version && codex login status',
+      installHint: 'Install and authenticate Codex, then run: codex login',
+      required: runtime === 'codex',
     },
     {
       name: 'tmux',
@@ -99,6 +105,7 @@ function checkDependencies(): void {
   const warnings: string[] = []
 
   for (const dep of deps) {
+    if (!dep.required) continue
     try {
       const output = execSync(dep.check, { stdio: 'pipe', encoding: 'utf-8' }).trim()
       console.log(chalk.green(`  ✓ ${dep.name}`))
@@ -151,16 +158,19 @@ program
   .action(async () => {
     console.log(chalk.bold('\nWelcome to Onkol Setup\n'))
 
-    // Check all dependencies before doing anything
-    checkDependencies()
-
     const homeDir = process.env.HOME || '/root'
+    const existing = loadCheckpoint(homeDir)
+    const runtime: AgentRuntime = existing?.answers.runtime || (existing ? 'claude' : await chooseRuntime('codex'))
+
+    // Check only the dependencies required by the selected provider.
+    checkDependencies(runtime)
+
     let answers: import('./prompts.js').SetupAnswers
     let checkpoint: SetupCheckpoint
 
     // Check for existing checkpoint
-    const existing = loadCheckpoint(homeDir)
     if (existing) {
+      existing.answers.runtime ||= 'claude'
       const { resume } = await (await import('inquirer')).default.prompt([{
         type: 'list',
         name: 'resume',
@@ -175,12 +185,12 @@ program
         checkpoint = existing
         console.log(chalk.green(`Resuming setup for "${answers.nodeName}". Skipping ${checkpoint.completed.length} completed steps.\n`))
       } else {
-        answers = await runSetupPrompts(homeDir)
+        answers = await runSetupPrompts(homeDir, runtime)
         checkpoint = { answers, completed: [] }
         saveCheckpoint(homeDir, checkpoint)
       }
     } else {
-      answers = await runSetupPrompts(homeDir)
+      answers = await runSetupPrompts(homeDir, runtime)
       checkpoint = { answers, completed: [] }
       saveCheckpoint(homeDir, checkpoint)
     }
@@ -192,7 +202,7 @@ program
     // Create directory structure
     if (!skip('directories')) {
       console.log(chalk.gray('Creating directories...'))
-      for (const sub of ['knowledge', 'workers', 'workers/.archive', 'scripts', 'plugins/discord-filtered', '.claude']) {
+      for (const sub of ['knowledge', 'workers', 'workers/.archive', 'scripts', 'plugins/discord-filtered', 'runtime/codex', '.claude']) {
         mkdirSync(resolve(dir, sub), { recursive: true })
       }
       markStep(homeDir, checkpoint, 'directories')
@@ -257,6 +267,7 @@ program
     // Write config.json
     if (!skip('config')) {
       const config = {
+        runtime: answers.runtime,
         nodeName: answers.nodeName,
         botToken: answers.botToken,
         guildId: answers.guildId,
@@ -266,6 +277,16 @@ program
         maxWorkers: 3,
         installDir: dir,
         plugins: answers.plugins,
+        ...(answers.runtime === 'codex' ? {
+          codex: {
+            home: answers.codexHome,
+            model: answers.codexModel,
+            reasoningEffort: answers.codexReasoningEffort,
+            autoCompactPercent: answers.codexAutoCompactPercent,
+            wsPortBase: 18300,
+            syncMattPocockSkills: true,
+          },
+        } : {}),
         ...(answers.watchdogProvider !== 'skip' ? {
           watchdog: {
             provider: answers.watchdogProvider,
@@ -303,7 +324,9 @@ program
       }
 
       // Generate CLAUDE.md, settings, mcp.json, state files
-      writeFileSync(resolve(dir, 'CLAUDE.md'), renderOrchestratorClaude({ nodeName: answers.nodeName, maxWorkers: 3 }))
+      const orchestratorInstructions = renderOrchestratorClaude({ nodeName: answers.nodeName, maxWorkers: 3, runtime: answers.runtime })
+      writeFileSync(resolve(dir, 'CLAUDE.md'), orchestratorInstructions)
+      writeFileSync(resolve(dir, 'AGENTS.md'), orchestratorInstructions)
       writeFileSync(resolve(dir, '.claude/settings.json'), renderSettings({ bashLogPath: resolve(dir, 'bash-log.txt') }))
 
       const pluginPath = resolve(dir, 'plugins/discord-filtered/index.ts')
@@ -321,15 +344,17 @@ program
           },
         },
       }
-      writeFileSync(resolve(dir, '.mcp.json'), JSON.stringify(mcpJson, null, 2))
+      if (answers.runtime === 'claude') {
+        writeFileSync(resolve(dir, '.mcp.json'), JSON.stringify(mcpJson, null, 2))
+      }
       if (!existsSync(resolve(dir, 'workers/tracking.json'))) writeFileSync(resolve(dir, 'workers/tracking.json'), '[]')
       if (!existsSync(resolve(dir, 'knowledge/index.json'))) writeFileSync(resolve(dir, 'knowledge/index.json'), '[]')
       if (!existsSync(resolve(dir, 'state.md'))) writeFileSync(resolve(dir, 'state.md'), '')
 
       // Pre-accept Claude Code trust
-      console.log(chalk.gray('Configuring Claude Code trust...'))
+      console.log(chalk.gray(`Configuring ${answers.runtime === 'codex' ? 'Codex' : 'Claude Code'} runtime...`))
       const claudeJsonPath = resolve(homeDir, '.claude/.claude.json')
-      try {
+      if (answers.runtime === 'claude') try {
         const claudeJson = existsSync(claudeJsonPath) ? JSON.parse(readFileSync(claudeJsonPath, 'utf-8')) : {}
         if (!claudeJson.projects) claudeJson.projects = {}
         claudeJson.projects[dir] = { ...(claudeJson.projects[dir] || {}), allowedTools: [], hasTrustDialogAccepted: true }
@@ -354,7 +379,7 @@ program
     }
 
     // --- CRITICAL: Copy scripts ---
-    const requiredScripts = ['spawn-worker.sh', 'dissolve-worker.sh', 'list-workers.sh', 'check-worker.sh', 'healthcheck.sh', 'worker-watchdog.sh', 'start-orchestrator.sh']
+    const requiredScripts = ['spawn-worker.sh', 'spawn-codex-worker.sh', 'dissolve-worker.sh', 'list-workers.sh', 'check-worker.sh', 'healthcheck.sh', 'worker-watchdog.sh', 'start-orchestrator.sh', 'start-codex-orchestrator.sh', 'restart-codex-session.sh', 'sync-codex-skills.sh', 'update-and-restart.sh']
     const scriptsSource = resolve(__dirname, '../../scripts')
     if (skip('scripts')) { console.log(chalk.gray('  Scripts already installed, skipping')) }
     else { console.log(chalk.gray('Copying scripts...'))
@@ -381,8 +406,21 @@ program
     const pluginFiles = ['index', 'mcp-server', 'discord-client', 'message-batcher']
     const pluginSourceDir = resolve(__dirname, '../plugin')
     const projectSrcDir = resolve(__dirname, '../../src/plugin')
-    if (skip('plugin')) { console.log(chalk.gray('  Plugin already installed, skipping')) }
-    else { console.log(chalk.gray('Installing discord-filtered plugin...'))
+    if (skip('plugin')) {
+      console.log(chalk.gray('  Agent runtime already installed, skipping'))
+    } else if (answers.runtime === 'codex') {
+      console.log(chalk.gray('Installing Codex Discord runtime...'))
+      const runtimeSource = resolve(__dirname, '../../runtime/codex')
+      const runtimeTarget = resolve(dir, 'runtime/codex')
+      for (const file of ['codex-bridge.js', 'discord-mcp-server.js', 'export-discord-range.js', 'package.json']) {
+        const src = resolve(runtimeSource, file)
+        if (!existsSync(src)) throw new Error(`Missing Codex runtime file: ${src}`)
+        copyFileSync(src, resolve(runtimeTarget, file))
+      }
+      execSync('npm install --omit=dev', { cwd: runtimeTarget, stdio: 'pipe' })
+      console.log(chalk.green('✓ Codex runtime installed'))
+      markStep(homeDir, checkpoint, 'plugin')
+    } else { console.log(chalk.gray('Installing discord-filtered plugin...'))
 
     let pluginCopied = 0
     for (const base of pluginFiles) {
@@ -428,6 +466,17 @@ program
       process.exit(1)
     }
     markStep(homeDir, checkpoint, 'plugin')
+    }
+
+    if (answers.runtime === 'codex') {
+      console.log(chalk.gray('Installing the latest Matt Pocock skills for Codex...'))
+      try {
+        execSync(`bash "${resolve(dir, 'scripts/sync-codex-skills.sh')}"`, { stdio: 'inherit' })
+      } catch {
+        console.error(chalk.red('\nFATAL: Could not install mattpocock/skills for Codex.'))
+        console.error(chalk.yellow('Check network/npm access, then resume `npx onkol setup`.'))
+        process.exit(1)
+      }
     }
 
     // Install systemd service
@@ -574,6 +623,7 @@ program
   .description('Update plugin + scripts and restart workers with conversation history preserved')
   .option('--skip-update', 'Skip pulling latest npm package, just restart workers')
   .option('--dir <path>', 'Onkol install directory', '')
+  .option('--runtime <provider>', 'Keep or switch runtime: claude|codex', '')
   .action(async (opts) => {
     // Find install directory
     let dir = opts.dir
@@ -594,7 +644,41 @@ program
       process.exit(1)
     }
 
-    const config = JSON.parse(readFileSync(resolve(dir, 'config.json'), 'utf-8'))
+    const configPath = resolve(dir, 'config.json')
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    const currentRuntime: AgentRuntime = config.runtime || 'claude'
+    const targetRuntime = (opts.runtime || currentRuntime) as AgentRuntime
+    if (!['claude', 'codex'].includes(targetRuntime)) {
+      console.log(chalk.red('--runtime must be "claude" or "codex"'))
+      process.exit(1)
+    }
+    const trackingPath = resolve(dir, 'workers/tracking.json')
+    const initialTracking = existsSync(trackingPath)
+      ? JSON.parse(readFileSync(trackingPath, 'utf-8'))
+      : []
+    const initiallyActive = initialTracking.filter((w: any) => w.status === 'active')
+    if (targetRuntime !== currentRuntime && initiallyActive.length > 0) {
+      console.log(chalk.red(`Cannot switch ${currentRuntime} → ${targetRuntime} with active workers.`))
+      console.log(chalk.yellow('Dissolve the workers first; their channels and learnings need an explicit lifecycle decision.'))
+      process.exit(1)
+    }
+    if (targetRuntime !== currentRuntime) {
+      const backupPath = `${configPath}.pre-${targetRuntime}-${Date.now()}.bak`
+      copyFileSync(configPath, backupPath)
+      config.runtime = targetRuntime
+      if (targetRuntime === 'codex') {
+        config.codex ||= {
+          home: resolve(process.env.HOME || '', '.codex'),
+          model: null,
+          reasoningEffort: 'high',
+          autoCompactPercent: 80,
+          wsPortBase: 18300,
+          syncMattPocockSkills: true,
+        }
+      }
+      writeFileSync(configPath, JSON.stringify(config, null, 2), { mode: 0o600 })
+      console.log(chalk.green(`Runtime switched to ${targetRuntime}; backup: ${backupPath}`))
+    }
     const nodeName = config.nodeName
     console.log(chalk.bold('=== Onkol Update & Restart ==='))
     console.log(chalk.gray(`Node: ${nodeName}`))
@@ -647,6 +731,30 @@ program
         } else {
           console.log(chalk.yellow(`  ⚠ No scripts dir found at ${scriptsSrc}`))
         }
+
+        // Install the Codex runtime without touching config, workers, knowledge,
+        // registry, or service discovery files.
+        if (targetRuntime === 'codex') {
+          const runtimeSrc = resolve(pkgRoot, 'runtime/codex')
+          const runtimeDest = resolve(dir, 'runtime/codex')
+          if (!existsSync(runtimeSrc)) throw new Error(`Codex runtime missing from package: ${runtimeSrc}`)
+          mkdirSync(runtimeDest, { recursive: true })
+          for (const f of readdirSync(runtimeSrc)) {
+            if (f.endsWith('.js') || f === 'package.json' || f === 'package-lock.json') {
+              copyFileSync(resolve(runtimeSrc, f), resolve(runtimeDest, f))
+            }
+          }
+          execSync('npm install --omit=dev', { cwd: runtimeDest, stdio: 'pipe' })
+          const agentsPath = resolve(dir, 'AGENTS.md')
+          if (!existsSync(agentsPath)) {
+            writeFileSync(agentsPath, renderOrchestratorClaude({
+              nodeName,
+              maxWorkers: config.maxWorkers || 3,
+              runtime: 'codex',
+            }))
+          }
+          console.log(chalk.green('  ✓ Codex runtime updated'))
+        }
       } catch (err) {
         console.log(chalk.yellow(`  ⚠ Update failed: ${err instanceof Error ? err.message : err}`))
         console.log(chalk.yellow('  Continuing with restart...'))
@@ -654,19 +762,55 @@ program
     } else {
       console.log(chalk.gray('[1/3] Skipping update (--skip-update)'))
     }
+
+    if (targetRuntime === 'codex' && !opts.skipUpdate) {
+      try {
+        execSync(`bash "${resolve(dir, 'scripts/sync-codex-skills.sh')}"`, { stdio: 'inherit' })
+      } catch {
+        console.error(chalk.red('\nFATAL: Onkol was updated, but mattpocock/skills could not be synchronized.'))
+        console.error(chalk.yellow('Existing sessions were left running. Fix network/npm access and run update again.'))
+        process.exit(1)
+      }
+    }
     console.log('')
 
     // Step 2: Find active workers and their session IDs
     console.log(chalk.cyan('[2/3] Dissolving active workers...'))
-    const trackingPath = resolve(dir, 'workers/tracking.json')
-    if (!existsSync(trackingPath)) {
-      console.log(chalk.gray('  No active workers.'))
-      console.log(chalk.green.bold('\n✓ Update complete. No workers to restart.'))
+    const tracking = existsSync(trackingPath)
+      ? JSON.parse(readFileSync(trackingPath, 'utf-8'))
+      : []
+    const active = tracking.filter((w: any) => w.status === 'active')
+    if (targetRuntime === 'codex') {
+      console.log(chalk.cyan('[2/3] Restarting Codex sessions in place...'))
+      const sessionName = `onkol-${nodeName}`
+      const sameRuntime = currentRuntime === 'codex'
+      if (sameRuntime) {
+        for (const worker of active) {
+          try {
+            execSync(`bash "${resolve(dir, 'scripts/restart-codex-session.sh')}" --name "${worker.name}"`, { stdio: 'pipe' })
+            console.log(chalk.green(`  ✓ ${worker.name} restarted in its existing channel`))
+          } catch (err) {
+            console.log(chalk.red(`  ✗ Failed to restart ${worker.name}: ${err instanceof Error ? err.message : err}`))
+          }
+        }
+        try {
+          execSync(`bash "${resolve(dir, 'scripts/start-codex-orchestrator.sh')}" --respawn`, { stdio: 'pipe' })
+          console.log(chalk.green('  ✓ Orchestrator restarted'))
+        } catch (err) {
+          console.log(chalk.red(`  ✗ Failed to restart orchestrator: ${err instanceof Error ? err.message : err}`))
+          try {
+            execSync(`bash "${resolve(dir, 'scripts/start-codex-orchestrator.sh')}"`, { stdio: 'pipe' })
+            console.log(chalk.green('  ✓ Orchestrator started'))
+          } catch { /* original error is already reported */ }
+        }
+      } else {
+        try { execSync(`tmux kill-session -t "${sessionName}"`, { stdio: 'pipe' }) } catch { /* not running */ }
+        execSync(`bash "${resolve(dir, 'scripts/start-codex-orchestrator.sh')}"`, { stdio: 'pipe' })
+        console.log(chalk.green('  ✓ Existing deployment migrated and Codex orchestrator started'))
+      }
+      console.log(chalk.green.bold('\n✓ Codex update complete. Configuration and state were preserved.'))
       return
     }
-
-    const tracking = JSON.parse(readFileSync(trackingPath, 'utf-8'))
-    const active = tracking.filter((w: any) => w.status === 'active')
     if (active.length === 0) {
       console.log(chalk.gray('  No active workers.'))
       console.log(chalk.green.bold('\n✓ Update complete. No workers to restart.'))

@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+ORIGINAL_ARGS=("$@")
+ONKOL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -f "$ONKOL_DIR/config.json" ]] &&
+   [[ "$(jq -r '.runtime // "claude"' "$ONKOL_DIR/config.json")" == "codex" ]]; then
+  exec "$ONKOL_DIR/scripts/spawn-codex-worker.sh" "${ORIGINAL_ARGS[@]}"
+fi
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -23,7 +30,6 @@ done
 : "${RESUME_SESSION:=}"
 
 # Load config
-ONKOL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="$ONKOL_DIR/config.json"
 BOT_TOKEN=$(jq -r '.botToken' "$CONFIG")
 GUILD_ID=$(jq -r '.guildId' "$CONFIG")

@@ -13,8 +13,8 @@ function loadTemplate(name: string): HandlebarsTemplateDelegate {
 
 Handlebars.registerHelper('eq', (a: string, b: string) => a === b)
 
-export function renderOrchestratorClaude(data: { nodeName: string; maxWorkers: number }): string {
-  return loadTemplate('orchestrator-claude.md.hbs')(data)
+export function renderOrchestratorClaude(data: { nodeName: string; maxWorkers: number; runtime?: 'claude' | 'codex' }): string {
+  return loadTemplate('orchestrator-claude.md.hbs')({ ...data, runtime: data.runtime || 'claude' })
 }
 
 export function renderSettings(data: { bashLogPath: string }): string {

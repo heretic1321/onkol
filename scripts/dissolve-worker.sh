@@ -80,4 +80,13 @@ echo "Worker directory archived to $ARCHIVE_DIR"
 UPDATED=$(jq "[.[] | select(.name != \"$WORKER_NAME\")]" "$TRACKING")
 echo "$UPDATED" > "$TRACKING"
 
+# Remove only this worker's channel-scoped Codex MCP registration. Other
+# workers share the same account and must remain registered.
+if [ "$(jq -r '.runtime // "claude"' "$CONFIG")" = "codex" ] && command -v codex >/dev/null 2>&1; then
+  CODEX_HOME_DIR=$(jq -r '.codex.home // empty' "$CONFIG")
+  [ -n "$CODEX_HOME_DIR" ] || CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+  CODEX_HOME_DIR="${CODEX_HOME_DIR/#\~/$HOME}"
+  CODEX_HOME="$CODEX_HOME_DIR" codex mcp remove "discord-${CHANNEL_ID}" >/dev/null 2>&1 || true
+fi
+
 echo "Worker '$WORKER_NAME' dissolved."

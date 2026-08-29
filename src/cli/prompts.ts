@@ -1,7 +1,10 @@
 import inquirer from 'inquirer'
 import chalk from 'chalk'
 
+export type AgentRuntime = 'claude' | 'codex'
+
 export interface SetupAnswers {
+  runtime: AgentRuntime
   installDir: string
   nodeName: string
   botToken: string
@@ -20,6 +23,24 @@ export interface SetupAnswers {
   watchdogModel: string | null
   watchdogApiKey: string | null
   watchdogApiUrl: string | null
+  codexHome: string | null
+  codexModel: string | null
+  codexReasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | null
+  codexAutoCompactPercent: number
+}
+
+export async function chooseRuntime(defaultRuntime: AgentRuntime = 'codex'): Promise<AgentRuntime> {
+  const { runtime } = await inquirer.prompt([{
+    type: 'list',
+    name: 'runtime',
+    message: 'Which agent runtime should this node use?',
+    choices: [
+      { name: 'Codex (ChatGPT subscription or API login)', value: 'codex' },
+      { name: 'Claude Code (existing Onkol behavior)', value: 'claude' },
+    ],
+    default: defaultRuntime,
+  }])
+  return runtime as AgentRuntime
 }
 
 function printDiscordBotGuide(): void {
@@ -74,7 +95,7 @@ ${separator}
 `)
 }
 
-export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
+export async function runSetupPrompts(homeDir: string, runtime: AgentRuntime): Promise<SetupAnswers> {
   const preDiscordAnswers = await inquirer.prompt([
     {
       type: 'input',
@@ -125,7 +146,7 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
       message: 'Do you have a registry file for this VM? (secrets, endpoints, ports)',
       choices: [
         { name: 'Yes, import from file', value: 'import' },
-        { name: 'Write a prompt — tell Claude what to find', value: 'prompt' },
+        { name: 'Write a prompt — tell the agent what to find', value: 'prompt' },
         { name: 'Skip for now', value: 'skip' },
       ],
     },
@@ -138,7 +159,7 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
     {
       type: 'input',
       name: 'registryPrompt',
-      message: 'Describe what Claude should find for the registry (secrets, endpoints, ports):',
+      message: 'Describe what the agent should find for the registry (secrets, endpoints, ports):',
       when: (a: Record<string, unknown>) => a.registryMode === 'prompt',
     },
     {
@@ -148,7 +169,7 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
       choices: [
         { name: 'Auto-discover (scan for running services)', value: 'auto' },
         { name: 'Import from file', value: 'import' },
-        { name: 'Write a prompt — tell Claude what to discover', value: 'prompt' },
+        { name: 'Write a prompt — tell the agent what to discover', value: 'prompt' },
         { name: 'Skip for now', value: 'skip' },
       ],
     },
@@ -161,13 +182,13 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
     {
       type: 'input',
       name: 'servicesPrompt',
-      message: 'Describe what Claude should discover about services on this VM:',
+      message: 'Describe what the agent should discover about services on this VM:',
       when: (a: Record<string, unknown>) => a.serviceMode === 'prompt',
     },
     {
       type: 'list',
       name: 'claudeMdMode',
-      message: 'Want to describe this project in plain language? Claude will convert it to a structured CLAUDE.md.',
+      message: `Want to describe this project in plain language? ${runtime === 'codex' ? 'Codex will create AGENTS.md instructions.' : 'Claude will create CLAUDE.md instructions.'}`,
       choices: [
         { name: 'Yes, write a description', value: 'prompt' },
         { name: 'Skip (use default template)', value: 'skip' },
@@ -189,6 +210,36 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
         { name: 'code-simplifier', value: 'code-simplifier', checked: true },
         { name: 'frontend-design', value: 'frontend-design', checked: false },
       ],
+      when: () => runtime === 'claude',
+    },
+    {
+      type: 'input',
+      name: 'codexHome',
+      message: 'Codex home containing this account login:',
+      default: `${homeDir}/.codex`,
+      when: () => runtime === 'codex',
+    },
+    {
+      type: 'input',
+      name: 'codexModel',
+      message: 'Codex model (leave blank to use account default):',
+      default: '',
+      when: () => runtime === 'codex',
+    },
+    {
+      type: 'list',
+      name: 'codexReasoningEffort',
+      message: 'Codex reasoning effort:',
+      choices: ['medium', 'high', 'xhigh', 'low'],
+      default: 'high',
+      when: () => runtime === 'codex',
+    },
+    {
+      type: 'number',
+      name: 'codexAutoCompactPercent',
+      message: 'Automatically compact idle Codex sessions at context %:',
+      default: 80,
+      when: () => runtime === 'codex',
     },
     {
       type: 'list',
@@ -257,6 +308,8 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
 
   return {
     ...answers,
+    runtime,
+    plugins: answers.plugins || [],
     registryPath: answers.registryPath || null,
     registryPrompt: answers.registryPrompt || null,
     serviceSummaryPath: answers.serviceSummaryPath || null,
@@ -265,5 +318,9 @@ export async function runSetupPrompts(homeDir: string): Promise<SetupAnswers> {
     watchdogModel,
     watchdogApiKey: answers.watchdogApiKey || null,
     watchdogApiUrl: answers.watchdogApiUrl || null,
+    codexHome: answers.codexHome || null,
+    codexModel: answers.codexModel || null,
+    codexReasoningEffort: answers.codexReasoningEffort || null,
+    codexAutoCompactPercent: Number(answers.codexAutoCompactPercent || 80),
   } as SetupAnswers
 }

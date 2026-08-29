@@ -2,18 +2,18 @@
 
 Your AI on-call team. One command per VM, and you get an autonomous agent on Discord that handles bugs, features, analysis, and ops so you don't have to.
 
-Onkol turns Claude Code into a decentralized on-call system. Each VM runs an orchestrator that listens on Discord. You describe a problem in plain English, it spins up a dedicated worker session to solve it, and reports back when it's done.
+Onkol turns Codex or Claude Code into a decentralized on-call system. Each VM runs one persistent orchestrator bot that listens on Discord. You describe a problem in plain English; it creates a temporary channel, summons a dedicated worker session, and dissolves it after the task is complete.
 
 ## How it works
 
 ```
 You on Discord:  "the auth endpoint is returning 403 after token refresh"
                               |
-                    Orchestrator (Claude Code)
+                    Orchestrator (Codex or Claude Code)
                     reads your message, understands intent,
                     prepares context, spawns a worker
                               |
-                    Worker (new Claude Code session)
+                    Worker (new agent session)
                     diagnoses the bug, fixes auth.py,
                     runs tests, commits to a branch
                               |
@@ -96,12 +96,12 @@ You need these on the VM where you're setting up:
 | Tool | Why | Install |
 |------|-----|---------|
 | **Node.js 18+** | Runs the setup CLI | [nodejs.org](https://nodejs.org) |
-| **Bun** | Runs the Discord channel plugin | `curl -fsSL https://bun.sh/install \| bash` |
-| **Claude Code** | The AI that does the work | [docs.anthropic.com](https://docs.anthropic.com/en/docs/claude-code/getting-started) |
+| **Codex or Claude Code** | The AI runtime that does the work | Log in to the selected runtime on this VM |
+| **Bun** | Runs the Claude Discord channel plugin (Claude nodes only) | `curl -fsSL https://bun.sh/install \| bash` |
 | **tmux** | Keeps sessions alive | `apt install tmux` / `yum install tmux` |
 | **jq** | JSON processing in scripts | `apt install jq` / `yum install jq` |
 
-Claude Code must be logged in via `claude.ai` OAuth on the VM (not API key).
+Codex nodes reuse the login in the selected `CODEX_HOME` (normally `~/.codex`). Claude nodes retain the original Claude OAuth behavior.
 
 The setup wizard checks all dependencies before asking any questions. If something's missing, it tells you exactly what to install and exits without wasting your time.
 
@@ -129,8 +129,7 @@ The wizard walks you through everything:
 Welcome to Onkol Setup
 
 Checking dependencies...
-  ✓ claude
-  ✓ bun
+  ✓ codex
   ✓ tmux
   ✓ jq
   ✓ curl
@@ -138,21 +137,22 @@ Checking dependencies...
   All dependencies found.
 
 ✔ Where should Onkol live? ~/onkol
+✔ Which agent runtime? Codex
 ✔ What should this node be called? api-server-prod
 ✔ Discord bot token: ****
 ✔ Discord server (guild) ID: 1234567890
 ✔ Your Discord user ID: 9876543210
-✔ Registry file? Write a prompt — tell Claude what to find
+✔ Registry file? Write a prompt — tell the agent what to find
 ✔ Describe: Find the API endpoints and database URLs from .env
 ✔ Service summary? Auto-discover
-✔ CLAUDE.md? Yes — This is a Node.js API server deployed via docker...
-✔ Plugins? context7, superpowers, code-simplifier
+✔ AGENTS.md? Yes — This is a Node.js API server deployed via docker...
+✔ Auto-compact Codex sessions at: 80%
 
 ✓ Bot token is valid
 ✓ Message Content intent is enabled
 ✓ Discord category and #orchestrator channel created
 ✓ 6 scripts installed
-✓ Plugin installed with 4 files + dependencies
+✓ Codex Discord runtime installed
 ✓ Systemd service installed and enabled
 ✓ Orchestrator started in tmux session "onkol-api-server-prod"
 
@@ -160,6 +160,23 @@ Checking dependencies...
 ```
 
 Go to your Discord server. You'll see a new category with an `#orchestrator` channel. Send it a message.
+
+### Codex behavior
+
+- You create one Discord application/bot for each VM, not one bot per project or task.
+- The VM bot owns one category. Its orchestrator automatically creates a channel and Codex worker for each task, then removes that worker when it is dissolved.
+- The shared bot nickname shows orchestrator context usage. Each worker's channel topic shows that worker's context percentage because Discord only permits one nickname per bot account.
+- Idle sessions compact automatically at the configured threshold. `/compact`, `/clear`, `/pause`, `/unpause`, and `/restart` remain available in the scoped channel.
+- Codex setup and update fetch the latest complete `mattpocock/skills` collection through `skills@latest`, install it globally for Codex, and verify `setup-matt-pocock-skills` is present. Set `codex.syncMattPocockSkills` to `false` to opt out.
+
+To migrate an existing source checkout after building this branch, first dissolve active workers, then run:
+
+```bash
+npm run build
+node dist/cli/index.js update --dir ~/onkol --runtime codex
+```
+
+The update backs up `config.json`, preserves registry, knowledge, services, Discord IDs, and worker state, and updates future Codex deployments in place. It refuses a provider switch while workers are active so their channels cannot be silently lost.
 
 ## Usage
 
@@ -207,7 +224,7 @@ The orchestrator executes these prompts on first boot and generates the structur
 ```
 Your Discord Server
 ├── Category: api-server-prod           ← VM 1
-│   ├── #orchestrator                   ← persistent Claude Code session
+│   ├── #orchestrator                   ← persistent Codex or Claude session
 │   ├── #fix-auth-bug                   ← worker (temporary)
 │   └── #analyze-error-logs             ← worker (temporary)
 ├── Category: web-app-staging           ← VM 2
@@ -217,9 +234,9 @@ Your Discord Server
 ```
 
 Each VM runs independently:
-- **Orchestrator.** Long-running Claude Code session in tmux. Receives Discord messages, spawns workers, manages lifecycle.
-- **Workers.** Ephemeral Claude Code sessions. One per task. Each gets its own Discord channel, its own context, its own instructions.
-- **discord-filtered plugin.** Custom MCP channel server that routes Discord messages by channel ID. All sessions share one bot but each only hears its own channel.
+- **Orchestrator.** Long-running selected agent runtime in tmux. Receives Discord messages, spawns workers, and manages lifecycle.
+- **Workers.** Ephemeral agent sessions. One per task. Each gets its own Discord channel, context, and instructions.
+- **Scoped Discord bridge.** Routes messages by channel ID. All sessions on a VM share one bot account, while each session only hears its own channel.
 
 ### On-disk structure
 
@@ -229,6 +246,7 @@ Each VM runs independently:
 ├── registry.json        # VM-specific secrets, endpoints, ports
 ├── services.md          # What runs on this VM
 ├── CLAUDE.md            # Orchestrator instructions
+├── AGENTS.md             # Codex orchestrator instructions
 ├── knowledge/           # Learnings from dissolved workers
 │   ├── index.json
 │   └── 2026-03-22-fix-auth-clock-skew.md
@@ -277,6 +295,7 @@ No re-entering bot tokens or server IDs. It picks up right where it left off.
 ```bash
 npx onkol setup          # Interactive setup wizard
 npx onkol@latest setup   # Force latest version
+onkol update --dir ~/onkol --runtime codex  # Migrate an idle Claude node
 ```
 
 On the VM after setup:
@@ -300,7 +319,7 @@ bash ~/onkol/scripts/dissolve-worker.sh --name "worker-name"
 
 ## Requirements
 
-- Claude Code with `claude.ai` OAuth login (Max plan recommended for concurrent sessions)
+- A logged-in Codex account or Claude Code OAuth session
 - Node.js 18+ and Bun on each VM
 - tmux and jq on each VM
 - A Discord server with a bot that has Manage Channels permission
@@ -315,7 +334,7 @@ bash ~/onkol/scripts/dissolve-worker.sh --name "worker-name"
 | Worker lifecycle scripts | Bash | ~400 |
 | Orchestrator/worker templates | Handlebars | ~150 |
 
-The core mechanism is [Claude Code Channels](https://code.claude.com/docs/en/channels), an MCP-based system that pushes Discord messages into Claude Code sessions. The `discord-filtered` plugin is a custom channel that routes by Discord channel ID, allowing multiple sessions to share one bot.
+Claude nodes use Claude Code Channels. Codex nodes use the bundled Codex app-server bridge plus a channel-scoped Discord MCP server. Both implementations route by Discord channel ID, allowing multiple sessions on one VM to share a bot safely.
 
 ## License
 

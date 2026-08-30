@@ -14,6 +14,15 @@ export interface DiscordClientConfig {
   botToken: string
   channelId: string
   allowedUsers: string[]
+  nodeName: string
+}
+
+// Parse the [node-name] prefix from a message. Returns { nodeName, content } or null if no prefix.
+export function parseNodePrefix(content: unknown): { nodeName: string; content: string } | null {
+  if (typeof content !== 'string') return null
+  const match = content.match(/^\[([a-zA-Z0-9_-]+)\]\s*/)
+  if (!match) return null
+  return { nodeName: match[1], content: content.slice(match[0].length) }
 }
 
 export function shouldForwardMessage(
@@ -21,10 +30,24 @@ export function shouldForwardMessage(
   authorId: string,
   isBot: boolean,
   targetChannelId: string,
-  allowedUsers: string[]
+  allowedUsers: string[],
+  botUserId: string | null = null,
+  nodeName = '',
+  messageContent = ''
 ): boolean {
-  if (isBot) return false
   if (messageChannelId !== targetChannelId) return false
+
+  if (isBot) {
+    // Only accept messages from our own bot (same token), not random bots
+    if (!botUserId || authorId !== botUserId) return false
+    // Parse the node prefix to prevent self-loops
+    const parsed = parseNodePrefix(messageContent)
+    if (!parsed) return false // No prefix = unknown source, ignore
+    if (parsed.nodeName === nodeName) return false // Self-loop prevention
+    return true
+  }
+
+  // Human messages: existing ALLOWED_USERS logic
   if (allowedUsers.length > 0 && !allowedUsers.includes(authorId)) return false
   return true
 }
@@ -89,16 +112,25 @@ export function createDiscordClient(
   })
 
   client.on('messageCreate', async (message) => {
+    const botUserId = client.user?.id || null
     if (
       shouldForwardMessage(
         message.channel.id,
         message.author.id,
         message.author.bot,
         config.channelId,
-        config.allowedUsers
+        config.allowedUsers,
+        botUserId,
+        config.nodeName,
+        message.content
       )
     ) {
-      const content = await resolveAttachments(message)
+      let content = await resolveAttachments(message)
+      // Strip the [node-name] prefix from bot messages before forwarding
+      if (message.author.bot && content) {
+        const parsed = parseNodePrefix(content)
+        if (parsed) content = parsed.content
+      }
       if (content) {
         onMessage(content, message)
       }

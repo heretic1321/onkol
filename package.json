@@ -1,6 +1,6 @@
 {
   "name": "onkol",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Decentralized on-call agent system powered by Codex or Claude Code",
   "type": "module",
   "bin": {

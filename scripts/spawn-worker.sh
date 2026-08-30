@@ -90,7 +90,8 @@ cat > "$WORKER_DIR/.mcp.json" << MCPEOF
       "env": {
         "DISCORD_BOT_TOKEN": "$BOT_TOKEN",
         "DISCORD_CHANNEL_ID": "$CHANNEL_ID",
-        "DISCORD_ALLOWED_USERS": "$ALLOWED_USERS_ESCAPED"
+        "DISCORD_ALLOWED_USERS": "$ALLOWED_USERS_ESCAPED",
+        "NODE_NAME": "$NODE_NAME"
       }
     }
   }

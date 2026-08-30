@@ -78,6 +78,22 @@ if [ "$SKIP_UPDATE" = false ]; then
           echo "  ✓ Plugin files updated (dist)"
       fi
 
+      # Existing Claude installs predate node-aware forwarding. Preserve their
+      # MCP configuration while adding the identity used for loop prevention.
+      if [ -f "$ONKOL_DIR/.mcp.json" ]; then
+        MCP_TMP=$(mktemp "$ONKOL_DIR/.mcp.json.XXXXXX")
+        if jq --arg node "$NODE_NAME" \
+          'if .mcpServers["discord-filtered"].env then .mcpServers["discord-filtered"].env.NODE_NAME = $node else . end' \
+          "$ONKOL_DIR/.mcp.json" > "$MCP_TMP"; then
+          chmod 600 "$MCP_TMP"
+          mv "$MCP_TMP" "$ONKOL_DIR/.mcp.json"
+          echo "  ✓ Node identity added to root MCP config"
+        else
+          rm -f "$MCP_TMP"
+          echo "  ⚠ Could not update root MCP config"
+        fi
+      fi
+
       # Update scripts
       if [ -d "$PKG_DIR/scripts" ]; then
         for script in "$PKG_DIR/scripts/"*.sh; do

@@ -112,10 +112,10 @@ The setup wizard checks all dependencies before asking any questions. If somethi
 3. Bot, Reset Token, **copy it** (you only see it once)
 4. Bot, Privileged Gateway Intents, enable **Message Content Intent**, Save
 5. OAuth2, URL Generator, check `bot`, check permissions:
-   - View Channels, Send Messages, Read Message History, Attach Files, Manage Channels
+   - View Channels, Send Messages, Read Message History, Attach Files, Manage Channels, **Manage Messages**
 6. Copy the URL, open in browser, invite to your Discord server
 
-The setup wizard validates your bot token and checks that Message Content Intent is enabled before proceeding. If something's wrong, it tells you exactly what to fix.
+The setup wizard validates your bot token and checks that Message Content Intent is enabled before proceeding. The bot also needs **Manage Messages** in the orchestrator category and worker channels: Codex keeps one pinned session-status card per channel and edits it in place. If something's wrong, the wizard tells you exactly what to fix.
 
 ### Run setup
 
@@ -165,9 +165,21 @@ Go to your Discord server. You'll see a new category with an `#orchestrator` cha
 
 - You create one Discord application/bot for each VM, not one bot per project or task.
 - The VM bot owns one category. Its orchestrator automatically creates a channel and Codex worker for each task, then removes that worker when it is dissolved.
-- The shared bot nickname shows orchestrator context usage. Each worker's channel topic shows that worker's context percentage because Discord only permits one nickname per bot account.
+- Each orchestrator and worker channel has one pinned Codex session-status card. It is updated in place with the current model, main-thread context usage, configured auto-compaction threshold, active subagents and requested models, and weekly quota when Codex exposes it. Unavailable metrics are shown as unavailable rather than estimated.
+- The bridge waits for Discord login before the automatic startup turn, so new workers show typing while that turn is running. Typing refreshes until `turn/completed` and then stops. Restarting a bridge reuses the existing pinned card instead of posting another message.
 - Idle sessions compact automatically at the configured threshold. `/compact`, `/clear`, `/pause`, `/unpause`, and `/restart` remain available in the scoped channel.
 - Codex setup and update fetch the latest complete `mattpocock/skills` collection through `skills@latest`, install it globally for Codex, and verify `setup-matt-pocock-skills` is present. Set `codex.syncMattPocockSkills` to `false` to opt out.
+
+### Codex status-card runbook
+
+After setup or an update, verify the session-status card in both `#orchestrator` and a newly spawned worker channel:
+
+1. During the automatic first turn, Discord shows typing; it stops after `turn/completed`.
+2. The channel has exactly one pinned status card. As the session runs, the same message is edited rather than replaced.
+3. The card reports the effective model, main-agent context usage, auto-compaction percentage, active subagents with their requested models, and weekly quota when Codex provides that data. Metrics that Codex does not expose are labeled unavailable.
+4. Restart the bridge or its service and confirm the existing pinned card is reused.
+
+If the card cannot be pinned or updated, re-check that the bot has **Manage Messages** as well as **Manage Channels** in the category and its channels.
 
 To migrate an existing source checkout after building this branch, first dissolve active workers, then run:
 
@@ -322,7 +334,7 @@ bash ~/onkol/scripts/dissolve-worker.sh --name "worker-name"
 - A logged-in Codex account or Claude Code OAuth session
 - Node.js 18+ and Bun on each VM
 - tmux and jq on each VM
-- A Discord server with a bot that has Manage Channels permission
+- A Discord server with a bot that has Manage Channels and **Manage Messages** permissions
 - VMs need outbound HTTPS access (no inbound ports needed)
 
 ## How it's built

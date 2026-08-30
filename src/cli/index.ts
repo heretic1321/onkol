@@ -255,7 +255,7 @@ program
         console.error(chalk.red('\nCheck that:'))
         console.error(chalk.red('  1. Your bot token is correct'))
         console.error(chalk.red('  2. Your server (guild) ID is correct'))
-        console.error(chalk.red('  3. The bot has been invited to the server with "Manage Channels" permission'))
+        console.error(chalk.red('  3. The bot has been invited to the server with "Manage Channels" and "Manage Messages" permissions'))
         console.error(chalk.yellow('\nYour answers have been saved. Fix the issue and run `npx onkol setup` again to resume.'))
         process.exit(1)
       }
@@ -339,6 +339,7 @@ program
               DISCORD_BOT_TOKEN: answers.botToken,
               DISCORD_CHANNEL_ID: orchChannelId,
               DISCORD_ALLOWED_USERS: JSON.stringify(allowedUsers),
+              NODE_NAME: answers.nodeName,
               TMUX_TARGET: `onkol-${answers.nodeName}`,
             },
           },
@@ -713,6 +714,23 @@ program
         }
         if (!pluginUpdated) {
           console.log(chalk.yellow(`  ⚠ No plugin source found in package (looked in ${pkgRoot})`))
+        }
+
+        // Existing Claude installs predate node-aware forwarding. Preserve the
+        // MCP configuration while adding the identity used for loop prevention.
+        const rootMcpPath = resolve(dir, '.mcp.json')
+        if (existsSync(rootMcpPath)) {
+          try {
+            const rootMcp = JSON.parse(readFileSync(rootMcpPath, 'utf-8'))
+            const discordEnv = rootMcp.mcpServers?.['discord-filtered']?.env
+            if (discordEnv) {
+              discordEnv.NODE_NAME = nodeName
+              writeFileSync(rootMcpPath, JSON.stringify(rootMcp, null, 2), { mode: 0o600 })
+              console.log(chalk.green('  ✓ Node identity added to root MCP config'))
+            }
+          } catch (err) {
+            console.log(chalk.yellow(`  ⚠ Could not update root MCP config: ${err instanceof Error ? err.message : err}`))
+          }
         }
 
         // Copy scripts

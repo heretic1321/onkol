@@ -67,6 +67,8 @@ const TURN_ID_RECONCILIATION_METHODS = new Set([
   "item/agentMessage/delta",
 ]);
 const FORWARDED_REACTIONS = new Set(["👍", "👎"]);
+const STATUS_CARD_MARKER = "onkol-codex-session-status";
+const STATUS_CARD_COLOR = 0x5865f2;
 
 if (!BOT_TOKEN || !CHANNEL_ID || !PROJECT_DIR) {
   console.error(
@@ -108,6 +110,18 @@ let rootAccess = null;
 let rootChannelAccess = new Map();
 let discordChannelScopeDir = null;
 let discordChannelScopeFile = null;
+let statusMessageId = null;
+let statusFileWritePromise = Promise.resolve();
+let statusCardUpdatePromise = Promise.resolve();
+const sessionStatus = {
+  state: "starting",
+  model: null,
+  reasoningEffort: CODEX_REASONING_EFFORT || null,
+  contextTokens: null,
+  contextWindow: null,
+  weeklyQuota: null,
+  subagents: new Map(),
+};
 const NICKNAME_INTERVAL = 60000;
 const STREAM_FAILURE_MESSAGE =
   "stream disconnected before completion: response.failed event received";
@@ -134,6 +148,127 @@ function envFlag(defaultValue, ...names) {
     if (["0", "false", "no", "off"].includes(normalized)) return false;
   }
   return defaultValue;
+}
+
+function readStatusObject() {
+  if (!STATUS_FILE) return Promise.resolve({});
+  return readFile(STATUS_FILE, "utf8")
+    .then((contents) => JSON.parse(contents))
+    .catch(() => ({}));
+}
+
+function queueStatusFileUpdate(patch) {
+  if (!STATUS_FILE) return Promise.resolve();
+  statusFileWritePromise = statusFileWritePromise
+    .then(async () => {
+      const status = await readStatusObject();
+      Object.assign(status, patch, { updated: new Date().toISOString() });
+      await writeFile(STATUS_FILE, `${JSON.stringify(status, null, 2)}\n`, { mode: 0o600 });
+    })
+    .catch((err) => {
+      console.error(`Status update failed: ${err.message || err}`);
+    });
+  return statusFileWritePromise;
+}
+
+function numericValue(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function selectWeeklyQuota(result) {
+  const buckets = [];
+  const addBucket = (bucket) => {
+    if (bucket && typeof bucket === "object") buckets.push(bucket);
+  };
+  addBucket(result?.rateLimits?.primary);
+  addBucket(result?.rateLimits?.secondary);
+  for (const limit of Object.values(result?.rateLimitsByLimitId || {})) {
+    addBucket(limit?.primary);
+    addBucket(limit?.secondary);
+  }
+  const weekly = buckets.find((bucket) => Number(bucket.windowDurationMins) === 10080);
+  if (!weekly) return null;
+  return {
+    usedPercent: numericValue(weekly.usedPercent),
+    windowDurationMins: 10080,
+    resetsAt: numericValue(weekly.resetsAt),
+  };
+}
+
+function valueFrom(object, ...names) {
+  for (const name of names) {
+    if (object?.[name] !== undefined && object?.[name] !== null) return object[name];
+  }
+  return null;
+}
+
+function formatTokenCount(value) {
+  const number = numericValue(value);
+  return number === null ? "Unavailable" : number.toLocaleString("en-US");
+}
+
+function formatContextStatus() {
+  const used = numericValue(sessionStatus.contextTokens);
+  const window = numericValue(sessionStatus.contextWindow);
+  if (used === null && window === null) return "Unavailable";
+  if (used === null) return `Unavailable / ${formatTokenCount(window)} tokens`;
+  if (window === null) return `${formatTokenCount(used)} tokens used / Unavailable`;
+  const percent = Math.round((used / window) * 100);
+  return `${formatTokenCount(used)} / ${formatTokenCount(window)} tokens (${percent}%)`;
+}
+
+function formatWeeklyQuota() {
+  const quota = sessionStatus.weeklyQuota;
+  if (!quota) return "Unavailable (Codex did not expose a 10,080-minute window)";
+  const used = quota.usedPercent === null ? "Unavailable" : `${quota.usedPercent}% used`;
+  const reset = quota.resetsAt === null ? "reset time unavailable" : `<t:${Math.round(quota.resetsAt)}:R>`;
+  return `${used} · ${reset}`;
+}
+
+function formatSubagents() {
+  const active = [...sessionStatus.subagents.values()]
+    .filter((agent) => !isTerminalSubagentStatus(agent.state))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  if (active.length === 0) return "None active";
+  const lines = active.map((agent) => {
+    const label = agent.label || agent.id;
+    const model = agent.model || "model unavailable";
+    const effort = agent.reasoningEffort ? ` · ${agent.reasoningEffort}` : "";
+    return `• ${label} — ${model}${effort} · ${agent.state || "state unavailable"}`;
+  });
+  return lines.join("\n").slice(0, 1024);
+}
+
+function buildStatusEmbed() {
+  return {
+    title: `${BOT_DISPLAY_NAME} · Codex session`,
+    color: STATUS_CARD_COLOR,
+    fields: [
+      { name: "State", value: sessionStatus.state || "Unavailable", inline: true },
+      { name: "Main model", value: sessionStatus.model || "Unavailable", inline: true },
+      { name: "Reasoning", value: sessionStatus.reasoningEffort || "Unavailable", inline: true },
+      { name: "Main context", value: formatContextStatus(), inline: false },
+      {
+        name: "Auto-compact at",
+        value: AUTO_COMPACT_PERCENT > 0 ? `${AUTO_COMPACT_PERCENT}% context` : "Disabled",
+        inline: true,
+      },
+      { name: "Active subagents", value: formatSubagents(), inline: false },
+      { name: "Weekly quota", value: formatWeeklyQuota(), inline: false },
+    ],
+    footer: { text: STATUS_CARD_MARKER },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function isStatusMessage(message) {
+  return Boolean(message?.embeds?.some((embed) =>
+    embed.footer?.text === STATUS_CARD_MARKER
+  ));
+}
+
+function isTerminalSubagentStatus(status) {
+  return ["completed", "failed", "errored", "interrupted", "shutdown", "notFound"].includes(status);
 }
 
 function shellQuote(value) {
@@ -425,27 +560,21 @@ function captureTextReplyFallback(item) {
 }
 
 async function updateContextDisplay(totalTokens, contextWindow) {
-  if (!GUILD_ID || !BOT_TOKEN || !contextWindow) return;
+  sessionStatus.contextTokens = numericValue(totalTokens);
+  sessionStatus.contextWindow = numericValue(contextWindow);
+  updateStatusCard();
+
+  if (!GUILD_ID || !BOT_TOKEN || !contextWindow || totalTokens === null || totalTokens === undefined) return;
   const now = Date.now();
   if (now - lastNicknameUpdate < NICKNAME_INTERVAL) return;
   lastNicknameUpdate = now;
 
   const pct = Math.round((totalTokens / contextWindow) * 100);
-  if (STATUS_FILE) {
-    try {
-      let status = {};
-      try {
-        status = JSON.parse(await readFile(STATUS_FILE, "utf8"));
-      } catch {}
-      status.contextPercent = pct;
-      status.totalTokens = totalTokens;
-      status.contextWindow = contextWindow;
-      status.updated = new Date().toISOString();
-      await writeFile(STATUS_FILE, `${JSON.stringify(status, null, 2)}\n`, { mode: 0o600 });
-    } catch (err) {
-      console.error(`Status update failed: ${err.message || err}`);
-    }
-  }
+  await queueStatusFileUpdate({
+    contextPercent: pct,
+    totalTokens,
+    contextWindow,
+  });
 
   if (AUTO_COMPACT_PERCENT > 0) {
     if (pct < Math.max(0, AUTO_COMPACT_PERCENT - 10)) {
@@ -514,7 +643,76 @@ async function channelById(channelId) {
   return await discordClient.channels.fetch(channelId);
 }
 
+function collectionValues(collection) {
+  if (!collection) return [];
+  if (typeof collection.values === "function") return [...collection.values()];
+  return Array.isArray(collection) ? collection : [];
+}
+
+async function fetchPinnedStatusMessages(channel) {
+  if (!channel?.messages?.fetchPinned) return [];
+  try {
+    const pinned = await channel.messages.fetchPinned();
+    return collectionValues(pinned).filter(isStatusMessage);
+  } catch (err) {
+    console.error(`Pinned status discovery failed: ${err.message || err}`);
+    return [];
+  }
+}
+
+async function ensureStatusMessage() {
+  const channel = await channelById(CHANNEL_ID);
+  if (!channel) throw new Error("Discord status channel is unavailable");
+
+  const persisted = await readStatusObject();
+  statusMessageId = persisted.statusMessageId || persisted.discordStatusMessageId || statusMessageId;
+  let statusMessage = null;
+  if (statusMessageId && channel.messages?.fetch) {
+    try {
+      const candidate = await channel.messages.fetch(statusMessageId);
+      if (isStatusMessage(candidate)) statusMessage = candidate;
+    } catch {
+      statusMessageId = null;
+    }
+  }
+
+  const pinnedStatusMessages = await fetchPinnedStatusMessages(channel);
+  if (!statusMessage) statusMessage = pinnedStatusMessages[0] || null;
+  if (!statusMessage) {
+    statusMessage = await channel.send({ embeds: [buildStatusEmbed()] });
+  }
+
+  statusMessageId = statusMessage.id;
+  await queueStatusFileUpdate({ statusMessageId });
+
+  const duplicateMessages = pinnedStatusMessages.filter((message) => message.id !== statusMessageId);
+  for (const duplicate of duplicateMessages) {
+    try {
+      await duplicate.unpin();
+    } catch (err) {
+      console.error(`Duplicate status unpin failed: ${err.message || err}`);
+    }
+  }
+  if (typeof statusMessage.pin === "function" && !statusMessage.pinned) {
+    await statusMessage.pin();
+  }
+  return statusMessage;
+}
+
+function updateStatusCard() {
+  statusCardUpdatePromise = statusCardUpdatePromise
+    .then(async () => {
+      const message = await ensureStatusMessage();
+      await message.edit({ embeds: [buildStatusEmbed()] });
+    })
+    .catch((err) => {
+      console.error(`Status card update failed: ${err.message || err}`);
+    });
+  return statusCardUpdatePromise;
+}
+
 async function startTyping(channelId = CHANNEL_ID) {
+  stopTyping();
   activeTypingChannel = await channelById(channelId);
   if (!activeTypingChannel) return;
   activeTypingChannel.sendTyping().catch(() => {});
@@ -529,6 +727,117 @@ function stopTyping() {
     typingInterval = null;
   }
   activeTypingChannel = null;
+}
+
+function isCollabAgentItem(item) {
+  return ["collabAgentToolCall", "collabToolCall", "collab_tool_call"].includes(item?.type);
+}
+
+function normalizeSubagentState(state) {
+  if (!state) return null;
+  const normalized = String(state).replaceAll("_", "").toLowerCase();
+  return {
+    pendinginit: "pending",
+    inprogress: "running",
+    running: "running",
+    completed: "completed",
+    failed: "failed",
+    errored: "errored",
+    interrupted: "interrupted",
+    shutdown: "shutdown",
+    notfound: "notFound",
+  }[normalized] || String(state);
+}
+
+function updateSubagentStatus(item) {
+  if (!isCollabAgentItem(item)) return false;
+
+  const receiverIds = [
+    ...((valueFrom(item, "receiverThreadIds", "receiver_thread_ids") || []).filter(Boolean)),
+  ];
+  const receiverId = valueFrom(item, "receiverThreadId", "receiver_thread_id");
+  const newThreadId = valueFrom(item, "newThreadId", "new_thread_id");
+  if (receiverId) receiverIds.push(receiverId);
+  if (newThreadId) receiverIds.push(newThreadId);
+
+  const states = valueFrom(item, "agentsStates", "agents_states") || {};
+  const receiverAgents = valueFrom(item, "receiverAgents", "receiver_agents") || [];
+  const agentById = new Map(receiverAgents.map((agent) => [
+    valueFrom(agent, "threadId", "thread_id", "id"),
+    agent,
+  ]));
+  for (const id of agentById.keys()) {
+    if (id) receiverIds.push(id);
+  }
+  for (const id of Object.keys(states)) receiverIds.push(id);
+
+  const uniqueIds = [...new Set(receiverIds.filter(Boolean).map(String))];
+  const callStatus = normalizeSubagentState(valueFrom(item, "status"));
+  const requestedModel = valueFrom(item, "model", "requestedModel", "requested_model");
+  const requestedEffort = valueFrom(item, "reasoningEffort", "reasoning_effort");
+  for (const id of uniqueIds) {
+    const prior = sessionStatus.subagents.get(id) || { id };
+    const agent = agentById.get(id) || {};
+    const agentState = states[id] || {};
+    const state = normalizeSubagentState(valueFrom(
+      agentState,
+      "status",
+    )) || normalizeSubagentState(valueFrom(agent, "status", "agentStatus", "agent_status")) || callStatus;
+    if (isTerminalSubagentStatus(state)) {
+      sessionStatus.subagents.delete(id);
+      continue;
+    }
+    sessionStatus.subagents.set(id, {
+      ...prior,
+      id,
+      label: valueFrom(agent, "agentNickname", "agent_nickname", "nickname", "name") || prior.label,
+      model: valueFrom(agent, "model", "requestedModel", "requested_model") || requestedModel || prior.model,
+      reasoningEffort: valueFrom(agent, "reasoningEffort", "reasoning_effort") || requestedEffort || prior.reasoningEffort,
+      state: state || prior.state || "state unavailable",
+    });
+  }
+  updateStatusCard();
+  return true;
+}
+
+function updateMainModelFromCatalog(result) {
+  const models = Array.isArray(result?.data)
+    ? result.data
+    : Array.isArray(result?.models)
+      ? result.models
+      : [];
+  const configuredModel = CODEX_MODEL.trim();
+  const selected = configuredModel
+    ? models.find((model) => valueFrom(model, "id", "model") === configuredModel)
+    : models.find((model) => model.isDefault === true);
+  sessionStatus.model = valueFrom(selected, "id", "model", "displayName") ||
+    (configuredModel || null);
+  if (!sessionStatus.reasoningEffort) {
+    sessionStatus.reasoningEffort = valueFrom(selected, "defaultReasoningEffort", "default_reasoning_effort");
+  }
+  updateStatusCard();
+}
+
+function updateWeeklyQuota(result) {
+  sessionStatus.weeklyQuota = selectWeeklyQuota(result);
+  updateStatusCard();
+}
+
+async function refreshSessionStatusFromCodex() {
+  const [models, limits] = await Promise.allSettled([
+    sendRequest("model/list", { includeHidden: true }),
+    sendRequest("account/rateLimits/read", null),
+  ]);
+  if (models.status === "fulfilled") {
+    updateMainModelFromCatalog(models.value);
+  } else {
+    console.error(`Codex model list unavailable: ${models.reason?.message || models.reason || "unknown error"}`);
+  }
+  if (limits.status === "fulfilled") {
+    updateWeeklyQuota(limits.value);
+  } else {
+    console.error(`Codex rate limits unavailable: ${limits.reason?.message || limits.reason || "unknown error"}`);
+  }
 }
 
 async function sendToDiscord(text, channelId = activeOutputChannelId || CHANNEL_ID) {
@@ -658,6 +967,8 @@ function handleNotification(msg) {
 
     case "turn/completed":
       if (!isCurrentTurnNotification(msg)) break;
+      sessionStatus.state = "idle";
+      updateStatusCard();
       onTurnCompleted();
       break;
 
@@ -666,6 +977,8 @@ function handleNotification(msg) {
       console.error("Codex error:", JSON.stringify(msg.params));
       if (msg.params.willRetry === false) {
         const errorText = msg.params.error?.message || "Codex encountered an error";
+        sessionStatus.state = "error";
+        updateStatusCard();
         stopTyping();
         pendingTerminalError = {
           errorText,
@@ -687,6 +1000,7 @@ function handleNotification(msg) {
 
     case "item/completed":
       if (!isCurrentTurnNotification(msg)) break;
+      updateSubagentStatus(msg.params?.item);
       logCompletedItemType(msg.params?.item);
       if (msg.params?.item?.type === "contextCompaction") {
         onContextCompactionCompleted();
@@ -702,6 +1016,7 @@ function handleNotification(msg) {
 
     case "item/started":
       if (!isCurrentTurnNotification(msg)) break;
+      updateSubagentStatus(msg.params?.item);
       if (msg.params?.item?.type !== "userMessage") {
         activeTurnHadProgress = true;
       }
@@ -723,9 +1038,20 @@ function handleNotification(msg) {
     case "thread/tokenUsage/updated":
       if (msg.params?.tokenUsage) {
         const { last, modelContextWindow } = msg.params.tokenUsage;
-        if (last && modelContextWindow) {
-          updateContextDisplay(last.inputTokens, modelContextWindow);
+        if (last || modelContextWindow) {
+          updateContextDisplay(last?.inputTokens, modelContextWindow);
         }
+      }
+      break;
+
+    case "account/rateLimits/updated":
+      updateWeeklyQuota(msg.params || {});
+      break;
+
+    case "model/rerouted":
+      if (msg.params?.toModel) {
+        sessionStatus.model = msg.params.toModel;
+        updateStatusCard();
       }
       break;
 
@@ -892,6 +1218,8 @@ async function sendTurn(
     return;
   }
   turnActive = true;
+  sessionStatus.state = "running";
+  updateStatusCard();
   activeOutputChannelId = channelId;
   deltaBuffer = "";
   fallbackText = "";
@@ -921,6 +1249,8 @@ async function sendTurn(
     activeTurnChannelScopeToken = null;
     await clearDiscordChannelScope();
     turnActive = false;
+    sessionStatus.state = "error";
+    updateStatusCard();
     await sendToDiscord("**Error:** Failed to send message to Codex");
     activeOutputChannelId = null;
     processQueue();
@@ -934,6 +1264,8 @@ async function sendBootstrapInstructionTurn(reason) {
     return;
   }
   turnActive = true;
+  sessionStatus.state = "running";
+  updateStatusCard();
   deltaBuffer = "";
   fallbackText = "";
   mcpReplyCalled = false;
@@ -944,6 +1276,7 @@ async function sendBootstrapInstructionTurn(reason) {
   activeTurnChannelScopeToken = null;
   resetActiveTurnId();
   try {
+    await startTyping(CHANNEL_ID);
     const result = await sendRequest("turn/start", {
       threadId,
       input: [{ type: "text", text: SYSTEM_INSTRUCTION }],
@@ -957,6 +1290,9 @@ async function sendBootstrapInstructionTurn(reason) {
     fallbackText = "";
     if (turnActive) {
       turnActive = false;
+      stopTyping();
+      sessionStatus.state = "idle";
+      updateStatusCard();
       resetActiveTurnId();
       fallbackText = "";
       mcpReplyCalled = false;
@@ -967,6 +1303,9 @@ async function sendBootstrapInstructionTurn(reason) {
   } catch (err) {
     console.error(`Bootstrap instruction failed${reason ? ` (${reason})` : ""}:`, err);
     turnActive = false;
+    stopTyping();
+    sessionStatus.state = "error";
+    updateStatusCard();
     resetActiveTurnId();
     fallbackText = "";
     mcpReplyCalled = false;
@@ -988,6 +1327,8 @@ async function onContextCompactionCompleted() {
 
 async function startCompaction(channelId) {
   turnActive = true;
+  sessionStatus.state = "compacting";
+  updateStatusCard();
   suppressTurnOutput = true;
   activeOutputChannelId = channelId;
   resetActiveTurnId();
@@ -1306,6 +1647,10 @@ async function initializeCodex() {
 
   ws.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized" }));
 
+  await ensureStatusMessage();
+  await refreshSessionStatusFromCodex();
+  await updateStatusCard();
+
   await registerDiscordMcp();
 
   await startCodexThread();
@@ -1328,7 +1673,7 @@ async function initializeCodex() {
   console.log(`Codex thread started: ${threadId}`);
 }
 
-function startDiscordBot() {
+async function startDiscordBot() {
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -1339,20 +1684,31 @@ function startDiscordBot() {
     partials: [Partials.Message, Partials.Reaction, Partials.User],
   });
   discordClient = client;
+  let resolveDiscordReady;
+  let rejectDiscordReady;
+  const discordReady = new Promise((resolve, reject) => {
+    resolveDiscordReady = resolve;
+    rejectDiscordReady = reject;
+  });
 
-  client.on("ready", () => {
-    console.log(`Discord bot logged in as ${client.user.tag}`);
-    discordChannel = client.channels.cache.get(CHANNEL_ID);
-    if (!discordChannel) {
-      client.channels.fetch(CHANNEL_ID).then((ch) => {
-        discordChannel = ch;
-        console.log(`Listening in #${ch.name}`);
-      });
-    } else {
+  client.once("ready", async () => {
+    try {
+      console.log(`Discord bot logged in as ${client.user.tag}`);
+      discordChannel = await client.channels.fetch(CHANNEL_ID);
+      if (!discordChannel) {
+        throw new Error(`Discord channel ${CHANNEL_ID} could not be fetched`);
+      }
+      const permissions = discordChannel.permissionsFor?.(client.user);
+      if (!permissions?.has?.("ManageMessages")) {
+        throw new Error("Discord bot requires Manage Messages permission in the session channel");
+      }
       console.log(`Listening in #${discordChannel.name}`);
-    }
-    if (ROOT_MULTI_CHANNEL) {
-      console.log(`Root routing active for ${rootChannelAccess.size} configured channel(s)`);
+      if (ROOT_MULTI_CHANNEL) {
+        console.log(`Root routing active for ${rootChannelAccess.size} configured channel(s)`);
+      }
+      resolveDiscordReady(client);
+    } catch (err) {
+      rejectDiscordReady(err);
     }
   });
 
@@ -1488,7 +1844,13 @@ function startDiscordBot() {
     await routeInput(input, msg, channelId, channelScopeToken);
   });
 
-  client.login(BOT_TOKEN);
+  try {
+    await client.login(BOT_TOKEN);
+    await discordReady;
+  } catch (err) {
+    client.destroy();
+    throw err;
+  }
 
   function cleanup() {
     console.log("Shutting down...");
@@ -1504,6 +1866,7 @@ function startDiscordBot() {
   process.on("SIGTERM", cleanup);
   process.on("SIGINT", cleanup);
   process.on("SIGHUP", cleanup);
+  return client;
 }
 
 async function main() {
@@ -1511,8 +1874,8 @@ async function main() {
   await initializeDiscordChannelScope();
   startCodexServer();
   await connectWebSocket();
+  await startDiscordBot();
   await initializeCodex();
-  startDiscordBot();
   console.log("Codex-Discord bridge running");
 }
 

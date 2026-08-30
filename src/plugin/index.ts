@@ -8,6 +8,7 @@ import { MessageBatcher } from './message-batcher.js'
 const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN
 const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID
 const ALLOWED_USERS: string[] = JSON.parse(process.env.DISCORD_ALLOWED_USERS || '[]')
+const NODE_NAME = process.env.NODE_NAME || 'unknown'
 const TMUX_TARGET = process.env.TMUX_TARGET || ''
 
 if (!BOT_TOKEN) {
@@ -36,7 +37,7 @@ function sendInterrupt(): boolean {
 }
 
 const discord = createDiscordClient(
-  { botToken: BOT_TOKEN, channelId: CHANNEL_ID, allowedUsers: ALLOWED_USERS },
+  { botToken: BOT_TOKEN, channelId: CHANNEL_ID, allowedUsers: ALLOWED_USERS, nodeName: NODE_NAME },
   async (content, message) => {
     // Instant acknowledgment — user knows the message reached the session
     try { await message.react('👀') } catch { /* ignore */ }
@@ -84,7 +85,8 @@ const discord = createDiscordClient(
 )
 
 const batcher = new MessageBatcher(async (text) => {
-  await discord.sendMessage(CHANNEL_ID, text)
+  // Prefix with node name so other nodes can identify the sender (and self-loop is prevented)
+  await discord.sendMessage(CHANNEL_ID, `[${NODE_NAME}] ${text}`)
 })
 
 const mcpServer = createMcpServer({
@@ -92,7 +94,7 @@ const mcpServer = createMcpServer({
     batcher.enqueue(text)
   },
   async replyWithFile(_channelId: string, text: string, filePath: string) {
-    await discord.sendMessageWithFile(CHANNEL_ID, text, filePath)
+    await discord.sendMessageWithFile(CHANNEL_ID, `[${NODE_NAME}] ${text}`, filePath)
   },
 })
 

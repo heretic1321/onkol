@@ -79,7 +79,7 @@ ${chalk.bold('Step 4: Invite the Bot to Your Server')}
       ${chalk.gray('✓ Attach Files')}
       ${chalk.gray('✓ Add Reactions')}
       ${chalk.gray('✓ Manage Channels  (needed to create/delete worker channels)')}
-      ${chalk.gray('✓ Manage Messages  (needed to pin and update the session status card)')}
+      ${chalk.gray('✓ Pin Messages  (needed to pin the session status card)')}
   → Copy the generated URL at the bottom
   → Open it in your browser
   → Select your Discord server and click "Authorize"

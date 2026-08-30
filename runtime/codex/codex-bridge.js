@@ -8,6 +8,7 @@ const { rmSync } = require("fs");
 const os = require("os");
 const path = require("path");
 const WebSocket = require("ws");
+const { pinStatusMessage } = require("./status-card");
 
 const MCP_SERVER_SCRIPT = path.resolve(__dirname, "discord-mcp-server.js");
 const ONKOL_DIR = process.env.ONKOL_DIR || path.resolve(__dirname, "../..");
@@ -693,9 +694,7 @@ async function ensureStatusMessage() {
       console.error(`Duplicate status unpin failed: ${err.message || err}`);
     }
   }
-  if (typeof statusMessage.pin === "function" && !statusMessage.pinned) {
-    await statusMessage.pin();
-  }
+  await pinStatusMessage(statusMessage);
   return statusMessage;
 }
 
@@ -1699,8 +1698,10 @@ async function startDiscordBot() {
         throw new Error(`Discord channel ${CHANNEL_ID} could not be fetched`);
       }
       const permissions = discordChannel.permissionsFor?.(client.user);
-      if (!permissions?.has?.("ManageMessages")) {
-        throw new Error("Discord bot requires Manage Messages permission in the session channel");
+      if (!permissions?.has?.("PinMessages")) {
+        console.error(
+          "Discord bot lacks Pin Messages permission; the status card will remain editable but unpinned"
+        );
       }
       console.log(`Listening in #${discordChannel.name}`);
       if (ROOT_MULTI_CHANNEL) {

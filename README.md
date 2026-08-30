@@ -112,10 +112,10 @@ The setup wizard checks all dependencies before asking any questions. If somethi
 3. Bot, Reset Token, **copy it** (you only see it once)
 4. Bot, Privileged Gateway Intents, enable **Message Content Intent**, Save
 5. OAuth2, URL Generator, check `bot`, check permissions:
-   - View Channels, Send Messages, Read Message History, Attach Files, Manage Channels, **Manage Messages**
+   - View Channels, Send Messages, Read Message History, Attach Files, Manage Channels, **Pin Messages**
 6. Copy the URL, open in browser, invite to your Discord server
 
-The setup wizard validates your bot token and checks that Message Content Intent is enabled before proceeding. The bot also needs **Manage Messages** in the orchestrator category and worker channels: Codex keeps one pinned session-status card per channel and edits it in place. If something's wrong, the wizard tells you exactly what to fix.
+The setup wizard validates your bot token and checks that Message Content Intent is enabled before proceeding. The bot also needs **Pin Messages** in the orchestrator category and worker channels: Codex keeps one pinned session-status card per channel and edits it in place. If pinning is unavailable, the bridge remains online and keeps the card editable but unpinned.
 
 ### Run setup
 
@@ -179,7 +179,7 @@ After setup or an update, verify the session-status card in both `#orchestrator`
 3. The card reports the effective model, main-agent context usage, auto-compaction percentage, active subagents with their requested models, and weekly quota when Codex provides that data. Metrics that Codex does not expose are labeled unavailable.
 4. Restart the bridge or its service and confirm the existing pinned card is reused.
 
-If the card cannot be pinned or updated, re-check that the bot has **Manage Messages** as well as **Manage Channels** in the category and its channels.
+If the card cannot be pinned, re-check that the bot has **Pin Messages** as well as **Manage Channels** in the category and its channels.
 
 To migrate an existing source checkout after building this branch, first dissolve active workers, then run:
 
@@ -334,7 +334,7 @@ bash ~/onkol/scripts/dissolve-worker.sh --name "worker-name"
 - A logged-in Codex account or Claude Code OAuth session
 - Node.js 18+ and Bun on each VM
 - tmux and jq on each VM
-- A Discord server with a bot that has Manage Channels and **Manage Messages** permissions
+- A Discord server with a bot that has Manage Channels and **Pin Messages** permissions
 - VMs need outbound HTTPS access (no inbound ports needed)
 
 ## How it's built

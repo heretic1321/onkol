@@ -255,7 +255,7 @@ program
         console.error(chalk.red('\nCheck that:'))
         console.error(chalk.red('  1. Your bot token is correct'))
         console.error(chalk.red('  2. Your server (guild) ID is correct'))
-        console.error(chalk.red('  3. The bot has been invited to the server with "Manage Channels" and "Manage Messages" permissions'))
+        console.error(chalk.red('  3. The bot has been invited to the server with "Manage Channels" and "Pin Messages" permissions'))
         console.error(chalk.yellow('\nYour answers have been saved. Fix the issue and run `npx onkol setup` again to resume.'))
         process.exit(1)
       }

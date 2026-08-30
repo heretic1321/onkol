@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'bun:test'
+import { createRequire } from 'module'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
 const root = resolve(import.meta.dir, '../..')
 const source = readFileSync(resolve(root, 'runtime/codex/codex-bridge.js'), 'utf8')
+const require = createRequire(import.meta.url)
 
 describe('Codex bridge session status', () => {
   it('waits for Discord readiness before the automatic Codex turn', () => {
@@ -26,7 +28,7 @@ describe('Codex bridge session status', () => {
     expect(source).toContain('statusMessageId')
     expect(source).toContain('fetchPinned()')
     expect(source).toContain('.edit(')
-    expect(source).toContain('.pin()')
+    expect(source).toContain('pinStatusMessage(')
     expect(source).toContain('STATUS_CARD_MARKER')
   })
 
@@ -39,8 +41,29 @@ describe('Codex bridge session status', () => {
     expect(source).toContain('AUTO_COMPACT_PERCENT')
   })
 
-  it('requires Manage Messages before pinning the status card', () => {
-    expect(source).toContain('ManageMessages')
+  it('checks the dedicated Pin Messages permission', () => {
+    expect(source).toContain('PinMessages')
     expect(source).toContain('permissionsFor')
+  })
+
+  it('keeps the bridge alive when Discord rejects a status-card pin', async () => {
+    const { pinStatusMessage } = require(
+      resolve(root, 'runtime/codex/status-card.js'),
+    )
+    const errors: string[] = []
+    const pinned = await pinStatusMessage(
+      {
+        pinned: false,
+        pin: async () => {
+          throw new Error('Missing Permissions')
+        },
+      },
+      { error: (message: string) => errors.push(message) },
+    )
+
+    expect(pinned).toBe(false)
+    expect(errors).toEqual([
+      'Status card pin unavailable: Missing Permissions',
+    ])
   })
 })

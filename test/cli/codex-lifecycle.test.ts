@@ -13,11 +13,11 @@ afterEach(() => {
 
 describe('Codex worker lifecycle', () => {
   it('creates an isolated worker, records it, and launches its tmux window', () => {
-    const install = mkdtempSync(resolve(tmpdir(), 'onkol-codex-test-'))
+    const install = mkdtempSync(resolve(tmpdir(), "onkol-codex-'test-"))
     temporaryDirs.push(install)
     const scripts = resolve(install, 'scripts')
     const workers = resolve(install, 'workers')
-    const project = resolve(install, 'project')
+    const project = resolve(install, `project with spaces $HOME 'single' "double"`)
     const fakeBin = resolve(install, 'fake-bin')
     mkdirSync(scripts)
     mkdirSync(workers)
@@ -46,11 +46,24 @@ describe('Codex worker lifecycle', () => {
 
     const fakeLog = resolve(install, 'commands.log')
     const tmux = resolve(fakeBin, 'tmux')
-    writeFileSync(tmux, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_LOG"\nexit 0\n')
+    writeFileSync(tmux, `#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_LOG"
+if [ "$1" = new-window ]; then
+  for arg do command="$arg"; done
+  bash -n -c "$command" || exit 1
+fi
+exit 0
+`)
     chmodSync(tmux, 0o755)
     const curl = resolve(fakeBin, 'curl')
     writeFileSync(curl, '#!/bin/sh\nprintf \'{"id":"worker-channel-1"}\\n\'\n')
     chmodSync(curl, 0o755)
+    const effectiveLog = resolve(install, 'effective.log')
+    const node = resolve(fakeBin, 'node')
+    writeFileSync(node, `#!/bin/sh
+printf '%s|%s|%s|%s\\n' "$ONKOL_ROLE" "$CODEX_MODEL" "$CODEX_REASONING_EFFORT" "$PROJECT_DIR" >> "$EFFECTIVE_LOG"
+`)
+    chmodSync(node, 0o755)
 
     const result = spawnSync('bash', [spawnScript,
       '--name', 'hr-feedback',
@@ -99,5 +112,32 @@ describe('Codex worker lifecycle', () => {
     const overrideLauncher = readFileSync(resolve(workers, 'override-worker/start-worker.sh'), 'utf8')
     expect(overrideLauncher).toContain('export CODEX_MODEL=gpt-5.5')
     expect(overrideLauncher).toContain('export CODEX_REASONING_EFFORT=low')
+
+    const recoveredConfig = JSON.parse(readFileSync(resolve(install, 'config.json'), 'utf8'))
+    recoveredConfig.codex.model = 'gpt-5.6-terra'
+    recoveredConfig.codex.reasoningEffort = 'high'
+    writeFileSync(resolve(install, 'config.json'), JSON.stringify(recoveredConfig))
+    const recoveryEnv = {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      EFFECTIVE_LOG: effectiveLog,
+    }
+    const recoveredDefault = spawnSync(
+      'bash',
+      [resolve(workers, 'hr-feedback/start-worker.sh')],
+      { encoding: 'utf8', env: recoveryEnv },
+    )
+    const recoveredOverride = spawnSync(
+      'bash',
+      [resolve(workers, 'override-worker/start-worker.sh')],
+      { encoding: 'utf8', env: recoveryEnv },
+    )
+
+    expect(recoveredDefault.status).toBe(0)
+    expect(recoveredOverride.status).toBe(0)
+    expect(readFileSync(effectiveLog, 'utf8').trim().split('\n')).toEqual([
+      `worker|gpt-5.6-terra|high|${project}`,
+      `worker|gpt-5.5|low|${project}`,
+    ])
   })
 })

@@ -50,6 +50,9 @@ EFFECTIVE_MODEL="${MODEL_OVERRIDE:-$(jq -r '.codex.model // empty' "$CONFIG")}"
 EFFECTIVE_REASONING="${REASONING_OVERRIDE:-$(jq -r '.codex.reasoningEffort // empty' "$CONFIG")}"
 EFFECTIVE_SERVICE_TIER="${SERVICE_TIER_OVERRIDE:-$(jq -r '.codex.serviceTier // empty' "$CONFIG")}"
 
+printf -v CONFIG_Q '%q' "$CONFIG"
+printf -v ONKOL_DIR_Q '%q' "$ONKOL_DIR"
+
 if [[ -n "$MODEL_OVERRIDE" ]]; then
   printf -v MODEL_EXPORT 'export CODEX_MODEL=%q' "$MODEL_OVERRIDE"
 else
@@ -108,36 +111,45 @@ cat > "$WORKER_DIR/status.json" <<EOF
 EOF
 
 WRAPPER="$WORKER_DIR/start-worker.sh"
+printf -v CHANNEL_ID_Q '%q' "$CHANNEL_ID"
+printf -v WORK_DIR_Q '%q' "$WORK_DIR"
+printf -v WS_PORT_Q '%q' "$WS_PORT"
+printf -v BOT_DISPLAY_NAME_Q '%q' "$NODE_NAME/$WORKER_NAME"
+printf -v STATUS_FILE_Q '%q' "$WORKER_DIR/status.json"
+printf -v INITIAL_PROMPT_FILE_Q '%q' "$WORKER_DIR/initial-prompt.md"
+printf -v SERVICE_TIER_Q '%q' "$EFFECTIVE_SERVICE_TIER"
+printf -v RESTART_COMMAND_Q '%q' "./scripts/restart-codex-session.sh --name \"$WORKER_NAME\""
 cat > "$WRAPPER" <<EOF
 #!/bin/bash
 set -euo pipefail
-CONFIG="$CONFIG"
+CONFIG=$CONFIG_Q
 export CODEX_HOME="\$(jq -r '.codex.home // empty' "\$CONFIG")"
 [[ -n "\$CODEX_HOME" ]] || export CODEX_HOME="\${CODEX_HOME:-\$HOME/.codex}"
 export CODEX_HOME="\${CODEX_HOME/#\\~/\$HOME}"
-export ONKOL_DIR="$ONKOL_DIR"
+export ONKOL_DIR=$ONKOL_DIR_Q
 export BOT_TOKEN="\$(jq -r '.botToken' "\$CONFIG")"
-export CHANNEL_ID="$CHANNEL_ID"
-export PROJECT_DIR="$WORK_DIR"
-export WS_PORT="$WS_PORT"
+export CHANNEL_ID=$CHANNEL_ID_Q
+export PROJECT_DIR=$WORK_DIR_Q
+export WS_PORT=$WS_PORT_Q
 export ALLOWED_USER_IDS="\$(jq -r '(.allowedUsers // []) | join(",")' "\$CONFIG")"
 export GUILD_ID="\$(jq -r '.guildId' "\$CONFIG")"
-export BOT_DISPLAY_NAME="$NODE_NAME/$WORKER_NAME"
+export BOT_DISPLAY_NAME=$BOT_DISPLAY_NAME_Q
 export CONTEXT_DISPLAY="channel-topic"
 export ONKOL_ROLE="worker"
-export STATUS_FILE="$WORKER_DIR/status.json"
-export INITIAL_PROMPT_FILE="$WORKER_DIR/initial-prompt.md"
+export STATUS_FILE=$STATUS_FILE_Q
+export INITIAL_PROMPT_FILE=$INITIAL_PROMPT_FILE_Q
 export AUTO_COMPACT_PERCENT="\$(jq -r '.codex.autoCompactPercent // 80' "\$CONFIG")"
 $MODEL_EXPORT
 $REASONING_EXPORT
-export CODEX_SERVICE_TIER="$EFFECTIVE_SERVICE_TIER"
-export RESTART_COMMAND='./scripts/restart-codex-session.sh --name "$WORKER_NAME"'
-cd "$ONKOL_DIR"
+export CODEX_SERVICE_TIER=$SERVICE_TIER_Q
+export RESTART_COMMAND=$RESTART_COMMAND_Q
+cd $ONKOL_DIR_Q
 exec node runtime/codex/codex-bridge.js
 EOF
 chmod 700 "$WRAPPER"
 
-tmux new-window -t "$TMUX_SESSION" -n "$WORKER_NAME" "bash '$WRAPPER'"
+printf -v WORKER_COMMAND 'env ONKOL_ROLE=worker bash %q' "$WRAPPER"
+tmux new-window -t "$TMUX_SESSION" -n "$WORKER_NAME" "$WORKER_COMMAND"
 TMP_TRACKING=$(mktemp "$ONKOL_DIR/workers/.tracking.XXXXXX")
 jq --arg name "$WORKER_NAME" --arg channel "$CHANNEL_ID" --arg dir "$WORK_DIR" \
   --arg intent "$INTENT" --arg started "$(date -Iseconds)" --argjson port "$WS_PORT" \

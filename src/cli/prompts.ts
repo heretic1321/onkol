@@ -3,6 +3,9 @@ import chalk from 'chalk'
 
 export type AgentRuntime = 'claude' | 'codex'
 
+export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol'
+export const DEFAULT_CODEX_REASONING_EFFORT = 'medium'
+
 export interface SetupAnswers {
   runtime: AgentRuntime
   installDir: string
@@ -224,7 +227,7 @@ export async function runSetupPrompts(homeDir: string, runtime: AgentRuntime): P
       type: 'input',
       name: 'codexModel',
       message: 'Codex model:',
-      default: 'gpt-5.6-sol',
+      default: DEFAULT_CODEX_MODEL,
       when: () => runtime === 'codex',
     },
     {
@@ -232,7 +235,7 @@ export async function runSetupPrompts(homeDir: string, runtime: AgentRuntime): P
       name: 'codexReasoningEffort',
       message: 'Codex reasoning effort:',
       choices: ['medium', 'high', 'xhigh', 'low'],
-      default: 'medium',
+      default: DEFAULT_CODEX_REASONING_EFFORT,
       when: () => runtime === 'codex',
     },
     {

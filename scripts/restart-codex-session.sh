@@ -22,5 +22,6 @@ jq -e --arg name "$WORKER_NAME" 'any(.[]; .name == $name and .status == "active"
 WRAPPER="$ONKOL_DIR/workers/$WORKER_NAME/start-worker.sh"
 [[ -x "$WRAPPER" ]] || { echo "ERROR: Missing worker launcher $WRAPPER" >&2; exit 1; }
 tmux kill-window -t "${TMUX_SESSION}:${WORKER_NAME}" 2>/dev/null || true
-tmux new-window -t "$TMUX_SESSION" -n "$WORKER_NAME" "ONKOL_ROLE=worker bash '$WRAPPER'"
+printf -v WORKER_COMMAND 'env ONKOL_ROLE=worker bash %q' "$WRAPPER"
+tmux new-window -t "$TMUX_SESSION" -n "$WORKER_NAME" "$WORKER_COMMAND"
 echo "Codex worker '$WORKER_NAME' restarted"

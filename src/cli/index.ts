@@ -9,7 +9,13 @@ import chalk from 'chalk'
 import { mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, unlinkSync } from 'fs'
 import { resolve } from 'path'
 import { execSync } from 'child_process'
-import { chooseRuntime, runSetupPrompts, type AgentRuntime } from './prompts.js'
+import {
+  chooseRuntime,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_CODEX_REASONING_EFFORT,
+  runSetupPrompts,
+  type AgentRuntime,
+} from './prompts.js'
 import { createCategory, createChannel, validateBotToken, checkGatewayIntents } from './discord-api.js'
 import { discoverServices, formatServicesMarkdown } from './auto-discover.js'
 import { renderOrchestratorClaude, renderSettings } from './templates.js'
@@ -380,7 +386,7 @@ program
     }
 
     // --- CRITICAL: Copy scripts ---
-    const requiredScripts = ['spawn-worker.sh', 'spawn-codex-worker.sh', 'dissolve-worker.sh', 'list-workers.sh', 'check-worker.sh', 'healthcheck.sh', 'worker-watchdog.sh', 'start-orchestrator.sh', 'start-codex-orchestrator.sh', 'restart-codex-session.sh', 'sync-codex-skills.sh', 'update-and-restart.sh']
+    const requiredScripts = ['spawn-worker.sh', 'spawn-codex-worker.sh', 'dissolve-worker.sh', 'list-workers.sh', 'check-worker.sh', 'check-codex-orchestrator.sh', 'healthcheck.sh', 'worker-watchdog.sh', 'start-orchestrator.sh', 'start-codex-orchestrator.sh', 'restart-codex-session.sh', 'sync-codex-skills.sh', 'update-and-restart.sh']
     const scriptsSource = resolve(__dirname, '../../scripts')
     if (skip('scripts')) { console.log(chalk.gray('  Scripts already installed, skipping')) }
     else { console.log(chalk.gray('Copying scripts...'))
@@ -413,7 +419,7 @@ program
       console.log(chalk.gray('Installing Codex Discord runtime...'))
       const runtimeSource = resolve(__dirname, '../../runtime/codex')
       const runtimeTarget = resolve(dir, 'runtime/codex')
-      for (const file of ['codex-bridge.js', 'discord-mcp-server.js', 'export-discord-range.js', 'package.json']) {
+      for (const file of ['codex-bridge.js', 'discord-mcp-server.js', 'export-discord-range.js', 'status-card.js', 'package.json']) {
         const src = resolve(runtimeSource, file)
         if (!existsSync(src)) throw new Error(`Missing Codex runtime file: ${src}`)
         copyFileSync(src, resolve(runtimeTarget, file))
@@ -670,8 +676,8 @@ program
       if (targetRuntime === 'codex') {
         config.codex ||= {
           home: resolve(process.env.HOME || '', '.codex'),
-          model: 'gpt-5.6-sol',
-          reasoningEffort: 'medium',
+          model: DEFAULT_CODEX_MODEL,
+          reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
           autoCompactPercent: 80,
           wsPortBase: 18300,
           syncMattPocockSkills: true,

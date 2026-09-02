@@ -23,7 +23,7 @@ describe('Discord status-card setup guidance', () => {
     const readme = read('README.md')
 
     for (const detail of [
-      'exactly one pinned status card',
+      'exactly one status card, pinned when',
       'edited rather than replaced',
       'current model',
       'main-agent context usage',

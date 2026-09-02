@@ -36,7 +36,12 @@ describe('Codex worker lifecycle', () => {
       maxWorkers: 3,
       allowedUsers: ['user-1'],
       runtime: 'codex',
-      codex: { wsPortBase: 19300, autoCompactPercent: 75 },
+      codex: {
+        model: 'gpt-5.6-sol',
+        reasoningEffort: 'medium',
+        wsPortBase: 19300,
+        autoCompactPercent: 75,
+      },
     }))
 
     const fakeLog = resolve(install, 'commands.log')
@@ -53,8 +58,6 @@ describe('Codex worker lifecycle', () => {
       '--task', 'Build the feedback workflow',
       '--intent', 'feature',
       '--context', 'Preserve existing APIs',
-      '--model', 'gpt-5.6-sol',
-      '--reasoning-effort', 'medium',
     ], {
       encoding: 'utf8',
       env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, FAKE_LOG: fakeLog },
@@ -73,7 +76,28 @@ describe('Codex worker lifecycle', () => {
       reasoningEffort: 'medium',
     })
     expect(readFileSync(resolve(workers, 'hr-feedback/initial-prompt.md'), 'utf8')).toContain('ephemeral Onkol Codex worker')
-    expect(readFileSync(resolve(workers, 'hr-feedback/start-worker.sh'), 'utf8')).toContain('export CODEX_MODEL="gpt-5.6-sol"')
+    expect(readFileSync(resolve(workers, 'hr-feedback/initial-prompt.md'), 'utf8')).toContain('Do not spawn another Onkol worker')
+    const launcher = readFileSync(resolve(workers, 'hr-feedback/start-worker.sh'), 'utf8')
+    expect(launcher).toContain('export ONKOL_ROLE="worker"')
+    expect(launcher).toContain("export CODEX_MODEL=\"$(jq -r '.codex.model // empty' \"$CONFIG\")\"")
+    expect(launcher).toContain("export CODEX_REASONING_EFFORT=\"$(jq -r '.codex.reasoningEffort // empty' \"$CONFIG\")\"")
     expect(readFileSync(fakeLog, 'utf8')).toContain('new-window -t onkol-test-vm -n hr-feedback')
+
+    const overrideResult = spawnSync('bash', [spawnScript,
+      '--name', 'override-worker',
+      '--dir', project,
+      '--task', 'Use explicit settings',
+      '--intent', 'fix',
+      '--model', 'gpt-5.5',
+      '--reasoning-effort', 'low',
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, FAKE_LOG: fakeLog },
+    })
+
+    expect(overrideResult.status).toBe(0)
+    const overrideLauncher = readFileSync(resolve(workers, 'override-worker/start-worker.sh'), 'utf8')
+    expect(overrideLauncher).toContain('export CODEX_MODEL=gpt-5.5')
+    expect(overrideLauncher).toContain('export CODEX_REASONING_EFFORT=low')
   })
 })

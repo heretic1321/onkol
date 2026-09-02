@@ -223,8 +223,8 @@ export async function runSetupPrompts(homeDir: string, runtime: AgentRuntime): P
     {
       type: 'input',
       name: 'codexModel',
-      message: 'Codex model (leave blank to use account default):',
-      default: '',
+      message: 'Codex model:',
+      default: 'gpt-5.6-sol',
       when: () => runtime === 'codex',
     },
     {
@@ -232,7 +232,7 @@ export async function runSetupPrompts(homeDir: string, runtime: AgentRuntime): P
       name: 'codexReasoningEffort',
       message: 'Codex reasoning effort:',
       choices: ['medium', 'high', 'xhigh', 'low'],
-      default: 'high',
+      default: 'medium',
       when: () => runtime === 'codex',
     },
     {

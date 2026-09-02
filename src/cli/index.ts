@@ -670,8 +670,8 @@ program
       if (targetRuntime === 'codex') {
         config.codex ||= {
           home: resolve(process.env.HOME || '', '.codex'),
-          model: null,
-          reasoningEffort: 'high',
+          model: 'gpt-5.6-sol',
+          reasoningEffort: 'medium',
           autoCompactPercent: 80,
           wsPortBase: 18300,
           syncMattPocockSkills: true,

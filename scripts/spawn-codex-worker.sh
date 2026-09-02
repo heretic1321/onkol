@@ -50,6 +50,17 @@ EFFECTIVE_MODEL="${MODEL_OVERRIDE:-$(jq -r '.codex.model // empty' "$CONFIG")}"
 EFFECTIVE_REASONING="${REASONING_OVERRIDE:-$(jq -r '.codex.reasoningEffort // empty' "$CONFIG")}"
 EFFECTIVE_SERVICE_TIER="${SERVICE_TIER_OVERRIDE:-$(jq -r '.codex.serviceTier // empty' "$CONFIG")}"
 
+if [[ -n "$MODEL_OVERRIDE" ]]; then
+  printf -v MODEL_EXPORT 'export CODEX_MODEL=%q' "$MODEL_OVERRIDE"
+else
+  MODEL_EXPORT='export CODEX_MODEL="$(jq -r '\''.codex.model // empty'\'' "$CONFIG")"'
+fi
+if [[ -n "$REASONING_OVERRIDE" ]]; then
+  printf -v REASONING_EXPORT 'export CODEX_REASONING_EFFORT=%q' "$REASONING_OVERRIDE"
+else
+  REASONING_EXPORT='export CODEX_REASONING_EFFORT="$(jq -r '\''.codex.reasoningEffort // empty'\'' "$CONFIG")"'
+fi
+
 tmux has-session -t "$TMUX_SESSION" 2>/dev/null || {
   echo "ERROR: orchestrator tmux session $TMUX_SESSION is not running" >&2
   exit 1
@@ -82,7 +93,7 @@ printf '# Task: %s\n\n**Intent:** %s\n**Working directory:** %s\n**Created:** %s
   "$WORKER_NAME" "$INTENT" "$WORK_DIR" "$(date -Iseconds)" "$TASK_DESC" > "$WORKER_DIR/task.md"
 printf '# Context for %s\n\n%s\n' "$WORKER_NAME" "$CONTEXT" > "$WORKER_DIR/context.md"
 cat > "$WORKER_DIR/initial-prompt.md" <<EOF
-You are an ephemeral Onkol Codex worker. Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, begin immediately, and communicate only through the scoped Discord MCP tools. Follow the requested intent. Before declaring completion, write reusable findings to $WORKER_DIR/learnings.md and update $WORKER_DIR/status.json.
+You are an ephemeral Onkol Codex worker. Read $WORKER_DIR/task.md and $WORKER_DIR/context.md, begin immediately, and communicate only through the scoped Discord MCP tools. Follow the requested intent. Do not spawn another Onkol worker; execute this assigned task directly. Before declaring completion, write reusable findings to $WORKER_DIR/learnings.md and update $WORKER_DIR/status.json.
 EOF
 cat > "$WORKER_DIR/status.json" <<EOF
 {
@@ -113,11 +124,12 @@ export ALLOWED_USER_IDS="\$(jq -r '(.allowedUsers // []) | join(",")' "\$CONFIG"
 export GUILD_ID="\$(jq -r '.guildId' "\$CONFIG")"
 export BOT_DISPLAY_NAME="$NODE_NAME/$WORKER_NAME"
 export CONTEXT_DISPLAY="channel-topic"
+export ONKOL_ROLE="worker"
 export STATUS_FILE="$WORKER_DIR/status.json"
 export INITIAL_PROMPT_FILE="$WORKER_DIR/initial-prompt.md"
 export AUTO_COMPACT_PERCENT="\$(jq -r '.codex.autoCompactPercent // 80' "\$CONFIG")"
-export CODEX_MODEL="$EFFECTIVE_MODEL"
-export CODEX_REASONING_EFFORT="$EFFECTIVE_REASONING"
+$MODEL_EXPORT
+$REASONING_EXPORT
 export CODEX_SERVICE_TIER="$EFFECTIVE_SERVICE_TIER"
 export RESTART_COMMAND='./scripts/restart-codex-session.sh --name "$WORKER_NAME"'
 cd "$ONKOL_DIR"

@@ -28,6 +28,7 @@ const ROOT_BOT_TOKEN = process.env.ROOT_BOT_TOKEN;
 const ROOT_BOT_APP_ID = process.env.ROOT_BOT_APP_ID;
 const BOT_APP_ID = process.env.BOT_APP_ID;
 const BOT_DISPLAY_NAME = process.env.BOT_DISPLAY_NAME || "codex";
+const ONKOL_ROLE = process.env.ONKOL_ROLE || "orchestrator";
 const CODEX_MODEL = process.env.CODEX_MODEL || "";
 const CODEX_REASONING_EFFORT = process.env.CODEX_REASONING_EFFORT || "";
 const CODEX_SERVICE_TIER = process.env.CODEX_SERVICE_TIER || "";
@@ -129,9 +130,13 @@ const STREAM_FAILURE_MESSAGE =
 const STREAM_RECOVERY_PROMPT =
   "Retry the previous user request. The prior model response failed before any work began.";
 const DISCORD_MCP_NAME = ROOT_MULTI_CHANNEL ? "discord-root" : `discord-${CHANNEL_ID}`;
-const THREAD_INSTRUCTION = ROOT_MULTI_CHANNEL
+const ROLE_INSTRUCTION = ONKOL_ROLE === "worker"
+  ? "You are an ephemeral Onkol worker. Execute the assigned task directly. The orchestrator role in AGENTS.md does not apply to this worker, even when the project directory is the Onkol install itself. Do not call Onkol worker lifecycle scripts or spawn another Onkol worker for the assigned task."
+  : "You are the persistent Onkol orchestrator. Follow the orchestrator role in AGENTS.md and dispatch project tasks through the lifecycle scripts.";
+const DISCORD_THREAD_INSTRUCTION = ROOT_MULTI_CHANNEL
   ? `This root thread is connected to Discord through the ${DISCORD_MCP_NAME} MCP server. Incoming messages include Discord routing metadata. Do not call Discord MCP tools unless the current task includes an explicit Discord reply scope token. Subagents and delegated tasks must return results to their parent agent, not to Discord.`
   : `This thread is connected to Discord through the ${DISCORD_MCP_NAME} MCP server. Do not call Discord MCP tools unless the current task includes an explicit Discord reply scope token. Subagents and delegated tasks must return results to their parent agent, not to Discord.`;
+const THREAD_INSTRUCTION = `${ROLE_INSTRUCTION}\n\n${DISCORD_THREAD_INSTRUCTION}`;
 const SYSTEM_INSTRUCTION = ROOT_MULTI_CHANNEL
   ? `You are communicating with the user via Discord. Use ONLY the MCP server named "${DISCORD_MCP_NAME}" to interact. Incoming messages include a Discord routing metadata block; use its channel_id and channel_scope_token for every Discord MCP call. Every Discord write call (\`reply\`, \`edit_message\`, or \`react\`) must also include \`scope_token: "${DISCORD_REPLY_TOKEN}"\`. Do NOT share these tokens with subagents. When spawning subagents, explicitly tell them not to use Discord MCP/tools and to return only to the parent agent. Do NOT use any other discord MCP server. Do NOT output responses as regular text; always use the \`reply\` tool so the user sees your response on Discord. Other available tools on this same server: edit_message, react, fetch_messages, read_last_x_messages_in_channel, export_message_range, download_attachment. Use \`reply\` with the \`files\` parameter to send file attachments. You don't have to reply for every little thing. Try to reply only when you're done, unless something important needs to be confirmed from the user. Also, try to use simpler language and avoid complex language.`
   : `You are communicating with the user via Discord. Use ONLY the MCP server named "${DISCORD_MCP_NAME}" to interact — call its \`reply\` tool to send messages to the user. Every Discord write call (\`reply\`, \`edit_message\`, or \`react\`) must include \`scope_token: "${DISCORD_REPLY_TOKEN}"\`. Do NOT share this scope token with subagents. When spawning subagents, explicitly tell them not to use Discord MCP/tools and to return only to the parent agent. Do NOT use any other discord MCP server. Do NOT output responses as regular text; always use the \`reply\` tool so the user sees your response on Discord. Other available tools on this same server: edit_message, react, fetch_messages, read_last_x_messages_in_channel, export_message_range, download_attachment. Use \`reply\` with the \`files\` parameter to send file attachments. You don't have to reply for every little thing. Try to reply only when you're done, unless something important needs to be confirmed from the user. Also, try to use simpler language and avoid complex language.`;
